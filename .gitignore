@@ -1,0 +1,15 @@
+# Godot 编辑器缓存（重新打开项目即可重建）
+.godot/
+/android/
+
+# 本机便携版 Godot 引擎：约 173 MB 第三方二进制，不入库
+tools/godot/
+
+# 网页版导出产物：由 export_web.bat 一键重新生成，含 38 MB wasm
+build/
+
+# 调试截图与预览图，不是游戏运行所需
+art/preview/
+
+# 本机助手数据
+.workbuddy/
