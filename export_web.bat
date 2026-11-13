@@ -42,9 +42,12 @@ echo.
 "%GODOT%" --headless --path "%PROJ%" --export-release "Web" "%PROJ%\build\web\index.html"
 if errorlevel 1 goto :failed
 
-rem --- give the data pack a content-based filename so browsers never reuse an old build ---
+rem --- stamp the data pack, then refresh the /docs copy used by GitHub Pages ---
+set "HAS_PY=0"
 where python >nul 2>nul
-if not errorlevel 1 python "%PROJ%\tools\stamp_web.py"
+if not errorlevel 1 set "HAS_PY=1"
+if "%HAS_PY%"=="1" python "%PROJ%\tools\stamp_web.py"
+if "%HAS_PY%"=="1" python "%PROJ%\tools\sync_docs.py"
 
 if /i not "%~1"=="quiet" (
     echo.
