@@ -5,8 +5,9 @@
 # 本机便携版 Godot 引擎：约 173 MB 第三方二进制，不入库
 tools/godot/
 
-# 网页版导出产物：由 export_web.bat 一键重新生成，含 38 MB wasm
-build/
+# 网页版成品入库（可直接部署）；其他平台的导出产物仍排除
+/build/*
+!/build/web/
 
 # 调试截图与预览图，不是游戏运行所需
 art/preview/
