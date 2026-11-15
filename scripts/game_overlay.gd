@@ -132,8 +132,8 @@ func is_open() -> bool:
 func show_title(best: Dictionary = {}, progress: Dictionary = {},
 		character: Dictionary = {}) -> void:
 	_mode = Mode.TITLE
-	_title.text = "幸存者"
-	_subtitle.text = "SURVIVORS"
+	_title.text = "神墓逃亡"
+	_subtitle.text = "TOMB ESCAPE"
 	var lines: Array[String] = [
 		"WASD / 方向键    移动        E / 空格    释放全部就绪技能",
 		"1 / 2 / 3    单独放技能        攻击全自动，专心走位",
