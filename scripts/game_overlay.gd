@@ -142,6 +142,7 @@ func show_title(best: Dictionary = {}, progress: Dictionary = {},
 		"",
 		"生存模式    无尽，熬到倒下为止",
 		"挑战模式    八道关卡，由易到难",
+		"每关最后 30 秒    墓主苏醒，全程追击你",
 	]
 	# 当前角色放在最显眼的位置：玩家进标题页第一件想确认的事就是"我在用谁"。
 	var character_name: String = String(character.get("name", ""))

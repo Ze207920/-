@@ -20,7 +20,7 @@ const GAP: float = 14.0
 const COLUMNS: int = 2
 ## 顶部标题区高度。
 const HEADER: float = 62.0
-const DETAIL_HEIGHT: float = 108.0
+const DETAIL_HEIGHT: float = 124.0
 
 var _selected: int = 0
 var _hover: int = -1
@@ -239,8 +239,10 @@ func _draw_detail(data: Dictionary) -> void:
 	UiStyle.draw_label(self, rect.position + Vector2(width - 176.0, 28.0),
 			"难度 %s  %s" % [ChallengeData.tier_name(int(level.tier)), level.star_text()], 12,
 			ChallengeData.tier_color(int(level.tier)), HORIZONTAL_ALIGNMENT_RIGHT, 156.0)
+	# 每关的墓主名字直接读关卡数据，玩家在进关前就知道最后 30 秒要躲谁。
+	var note: String = "\n墓室碎石会随机隆起，挡住走位；最后 30 秒「%s」苏醒，全程追击你。" % level.boss_name
 	UiStyle.draw_paragraph(self, rect.position + Vector2(20.0, 52.0),
-			level.blurb + "\n墓室碎石会随机隆起，挡住你与邪物的去路。", 12,
+			level.blurb + note, 12,
 			Color(0.78, 0.83, 0.90), width - 40.0, 3)
 
 

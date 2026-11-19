@@ -43,6 +43,8 @@ const SHADOW: Color = Color(0.0, 0.0, 0.0, 0.24)
 @export var body_color: Color = Color(0.58, 0.66, 0.60)
 @export var kind: EnemyData.Kind = EnemyData.Kind.ZOMBIE
 @export var knockback_resist: float = 1.0
+## 挑战关最后 30 秒的墓主。由 EnemyData.boss_for() 注入，只在入树前设置一次。
+@export var is_boss: bool = false
 
 ## 所属种类，供上层查询 id / 名称。
 var data: EnemyData = null
@@ -72,7 +74,13 @@ func _ready() -> void:
 	motion_mode = CharacterBody2D.MOTION_MODE_FLOATING
 	# 敌人既要彼此挤成肉墙，也要被墓室碎石挡住去路（障碍层）。
 	collision_layer = PhysicsLayers.ENEMY
-	collision_mask = PhysicsLayers.ENEMY | PhysicsLayers.OBSTACLE
+	# 墓主例外：它必须径直穿过杂兵与碎石追人，否则会被卡在怪墙后面，
+	# 玩家只要站到尸墙另一侧就永远安全，追击威胁直接失效。墙仍由
+	# _confine_to_arena() 软夹制，不会跑出墓室。
+	if is_boss:
+		collision_mask = 0
+	else:
+		collision_mask = PhysicsLayers.ENEMY | PhysicsLayers.OBSTACLE
 	_build_collision()
 	queue_redraw()
 
@@ -83,6 +91,7 @@ func apply_data(source: EnemyData) -> void:
 		return
 	data = source
 	kind = source.kind
+	is_boss = source.is_boss
 	body_color = source.body_color
 	radius = source.radius
 	knockback_resist = source.knockback_resist
@@ -117,6 +126,10 @@ func _build_collision() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	# 光环是随时间脉动的，只有墓主需要每帧重绘；普通邪物仍只在受击时重绘，
+	# 同屏两百只时不会因为多一个 boss 就多两百次绘制指令重建。
+	if is_boss:
+		queue_redraw()
 	if _flash > 0.0:
 		_flash = maxf(0.0, _flash - delta)
 		# 用 modulate 而不是「改颜色 + queue_redraw」来表现闪白：
@@ -249,7 +262,22 @@ func _keep_outside_target() -> void:
 # 16~55 像素，玩家根本没机会看清爪子和鳞片。所以刻意把四种轮廓做成
 # 瘦长人形 / 盘曲细颈 / 宽胖壮汉 / 扁圆甲虫，让剪影本身就互不相似。
 
+## 墓主的追击光环：脚下阴影 + 两圈呼吸红环。刻意不画名字，避免给敌人节点
+## 引入中文字体依赖；名字与血量交给 HUD 统一显示。
+func _draw_boss_aura() -> void:
+	var pulse: float = 0.5 + 0.5 * sin(float(Time.get_ticks_msec()) / 260.0)
+	_ground_shadow(1.18, 0.42, 1.08)
+	var r := Vector2(radius * 1.30, radius * 1.16)
+	_ellipse_arc(Vector2.ZERO, r, 0.0, TAU,
+			Color(0.96, 0.28, 0.22, 0.30 + 0.26 * pulse), 3.0)
+	_ellipse_arc(Vector2.ZERO, r * 1.14, 0.0, TAU,
+			Color(0.98, 0.42, 0.20, 0.12 + 0.12 * pulse), 2.0)
+
+
 func _draw() -> void:
+	# 墓主光环画在造型缩放之前：它按绝对半径取值，不跟着 _art_scale() 缩。
+	if is_boss:
+		_draw_boss_aura()
 	# 小体型的两只（蛇 r=10、尸蟞 r=8）在实机里只剩一个色点，造型全糊。
 	# 视觉上放大两成不改碰撞半径：判定保持原样，纯粹让它们更容易被看见。
 	var s: float = _art_scale()

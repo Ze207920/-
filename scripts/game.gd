@@ -196,6 +196,9 @@ var _action_layer: CanvasLayer = null
 var _obstacles: Array[Obstacle] = []
 var _obstacle_timer: float = 0.0
 var kills: int = 0
+## 挑战关最后 30 秒的墓主。单独留引用是为了 HUD 血条与「不被回收机制瞬移」。
+var _boss: Enemy = null
+var _boss_spawned: bool = false
 
 ## 当前关卡；生存模式下为 null，所有分支都用它区分两种玩法。
 var _level: ChallengeData = null
@@ -309,6 +312,7 @@ func _physics_process(delta: float) -> void:
 	if _level != null and _elapsed >= _level.duration:
 		_finish(true)
 		return
+	_tick_boss()
 	_tick_spawning(delta)
 	_tick_recycle(delta)
 	_tick_obstacles(delta)
@@ -659,6 +663,73 @@ func _on_character_closed() -> void:
 
 # ---------------------------------------------------------------- 刷怪
 
+## 挑战关最后 BOSS_WINDOW 秒放出该关墓主，一局只放一次。
+## 放在刷怪之前：到点那一帧不会先丢一批杂兵、再让 boss 从怪堆里挤出来。
+func _tick_boss() -> void:
+	if _level == null or _boss_spawned:
+		return
+	if _level.duration - _elapsed > ChallengeData.BOSS_WINDOW:
+		return
+	_boss_spawned = true
+	var preset: EnemyData = EnemyData.boss_for(_level)
+	var boss := Enemy.new()
+	# 和 _spawn_one 一个规矩：种类、目标、位置都要在 add_child 之前写好。
+	# _ready() 会按 radius 建碰撞体，位置晚了就会有一帧停在原点被判成贴身。
+	boss.apply_data(preset)
+	boss.setup(player, 1.0, 1.0, 1.0)
+	boss.arena_rect = _arena
+	var point: Vector2 = _boss_spawn_point(boss.radius)
+	boss.position = point
+	add_child(boss)
+	boss.global_position = point
+	boss.died.connect(_on_enemy_died)
+	enemies.append(boss)
+	_boss = boss
+	_queue_toast("%s 苏醒！最后 30 秒，它会一直追着你" % _level.boss_name)
+	AudioManager.play("levelup")
+
+
+## 墓主从「视野边缘再远一点」的场地边入场：约 640 像素，两三秒就能压到脸上。
+## 刻意不取最远角（实测 1252 像素）——第一关墓主比玩家慢，从那儿出发 30 秒
+## 都追不到人，追击就只剩个图标。四角 + 四边中点八个候选点里挑距离最接近
+## 640 的那个；玩家贴墙时所有点都太近，则退回最远角，绝不贴脸生成。
+## grow(-radius) 保证庞大的碰撞体不会卡进墙里。
+const BOSS_SPAWN_DISTANCE: float = 640.0
+const BOSS_MIN_DISTANCE: float = 420.0
+
+func _boss_spawn_point(radius: float) -> Vector2:
+	var inner: Rect2 = _arena.grow(-radius - 8.0)
+	if inner.size.x <= 0.0 or inner.size.y <= 0.0 or not is_instance_valid(player):
+		return _arena.get_center()
+	var center: Vector2 = inner.get_center()
+	var candidates: Array[Vector2] = [
+		inner.position,
+		Vector2(inner.end.x, inner.position.y),
+		Vector2(inner.position.x, inner.end.y),
+		inner.end,
+		Vector2(center.x, inner.position.y),
+		Vector2(center.x, inner.end.y),
+		Vector2(inner.position.x, center.y),
+		Vector2(inner.end.x, center.y),
+	]
+	var best: Vector2 = candidates[0]
+	var best_score: float = -1.0e9
+	var farthest: Vector2 = candidates[0]
+	var farthest_distance: float = -1.0
+	for point: Vector2 in candidates:
+		var distance: float = point.distance_to(player.global_position)
+		if distance > farthest_distance:
+			farthest_distance = distance
+			farthest = point
+		var score: float = -absf(distance - BOSS_SPAWN_DISTANCE)
+		if distance < BOSS_MIN_DISTANCE:
+			score -= 10000.0
+		if score > best_score:
+			best_score = score
+			best = point
+	return farthest if best_score < -10000.0 else best
+
+
 func _tick_spawning(delta: float) -> void:
 	var curve: PackedFloat32Array = difficulty_at(_elapsed)
 	var cap: int = mini(int(curve[3]), max_enemies)
@@ -686,6 +757,9 @@ func _tick_recycle(delta: float) -> void:
 	var limit: float = RECYCLE_DISTANCE * RECYCLE_DISTANCE
 	for enemy: Enemy in enemies:
 		if not is_instance_valid(enemy) or enemy.is_queued_for_deletion():
+			continue
+		# 墓主全程贴着玩家跑，绝不能被「远处回收」瞬移走，否则追击会一跳一跳。
+		if enemy == _boss:
 			continue
 		if enemy.global_position.distance_squared_to(player.global_position) <= limit:
 			continue
@@ -932,6 +1006,9 @@ func _prune_gems() -> void:
 
 func _on_enemy_died(enemy: Enemy) -> void:
 	enemies.erase(enemy)
+	# 墓主真被火力压死也照样算击杀、掉宝石，只是不再补刷第二只。
+	if enemy == _boss:
+		_boss = null
 	kills += 1
 	AudioManager.play("kill")
 	_spawn_burst(enemy.global_position, enemy.body_color, enemy.radius)
@@ -1108,6 +1185,13 @@ func _refresh_hud() -> void:
 		hud.challenge_name = ""
 		hud.challenge_remaining = -1.0
 		hud.challenge_progress = -1.0
+	# 墓主血条：从苏醒那一刻起一直显示到本关结束，玩家能判断该躲还是该硬拼。
+	if _boss != null and is_instance_valid(_boss):
+		hud.boss_name = _level.boss_name if _level != null else "墓主"
+		hud.boss_ratio = _boss.get_health_ratio()
+	else:
+		hud.boss_name = ""
+		hud.boss_ratio = -1.0
 	hud.weapon_lines.clear()
 	for weapon: Weapon in player.weapons:
 		hud.weapon_lines.append("%s   Lv%d" % [weapon.display_name(), weapon.level])

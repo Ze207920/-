@@ -36,6 +36,9 @@ var show_skill_chips: bool = true
 ## 升级解锁 / 强化时的横幅提示。
 var toast_text: String = ""
 var toast_time: float = 0.0
+## 挑战关最后 30 秒的墓主：名字 + 剩余血量比例（负数表示不在场）。
+var boss_name: String = ""
+var boss_ratio: float = -1.0
 
 var _hurt_flash: float = 0.0
 var _pulse: float = 0.0
@@ -146,6 +149,19 @@ func _draw_challenge(view: Vector2) -> void:
 	var filled: float = clampf(challenge_progress, 0.0, 1.0)
 	if filled > 0.0:
 		draw_rect(Rect2(bar.position, Vector2(bar.size.x * filled, bar.size.y)), UiStyle.ACCENT)
+
+	# 墓主登场后多一行红色追击警示 + 血条，和上面的蓝色通关进度分开，
+	# 玩家扫一眼就能分清「还剩多久」和「这东西还剩多少血」。
+	if boss_name != "":
+		var boss_fill: float = clampf(boss_ratio, 0.0, 1.0)
+		UiStyle.draw_label(self, Vector2(view.x * 0.5 - 170.0, 94.0),
+				"%s 追击中   %d%%" % [boss_name, int(boss_fill * 100.0)], 12,
+				UiStyle.HP, HORIZONTAL_ALIGNMENT_CENTER, 340.0)
+		var boss_bar := Rect2(view.x * 0.5 - 120.0, 98.0, 240.0, 4.0)
+		draw_rect(boss_bar, Color(0.13, 0.17, 0.23, 0.92))
+		if boss_fill > 0.0:
+			draw_rect(Rect2(boss_bar.position, Vector2(boss_bar.size.x * boss_fill, boss_bar.size.y)),
+					UiStyle.HP)
 
 
 func _draw_stats(view: Vector2) -> void:

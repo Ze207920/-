@@ -29,6 +29,9 @@ enum Kind {
 @export var weight: float = 100.0
 ## 一次生成几只。尸蟞成群出现，单只很弱但一窝很难缠。
 @export var pack_size: int = 1
+## 墓主（挑战关最后 30 秒的追击者）。不进 presets() 刷怪池，只由 boss_for() 生成，
+## 所以普通抽签永远抽不到它；Enemy 会据此换掉碰撞遮罩并画追击光环。
+@export var is_boss: bool = false
 
 ## 预设缓存。返回的是共享实例，调用方只读，不要就地改数值。
 static var _presets: Array[EnemyData] = []
@@ -71,6 +74,27 @@ static func by_id(enemy_id: String) -> EnemyData:
 		if preset.id == enemy_id:
 			return preset
 	return null
+
+
+## 按关卡数据打造该关的墓主。复用海猴子的宽胖剪影（巨物感最足），
+## 数值与配色全部来自 ChallengeData，这样八关的墓主强弱、颜色各不相同。
+## 不加入 presets()：刷怪池里出现一只 1100 血的怪会让常规节奏彻底崩掉。
+static func boss_for(level: ChallengeData) -> EnemyData:
+	var data := EnemyData.new()
+	data.id = "boss_" + level.id
+	data.display_name = level.boss_name
+	data.kind = Kind.APE
+	data.is_boss = true
+	data.max_health = level.boss_health
+	data.move_speed = level.boss_speed
+	data.contact_damage = level.boss_damage
+	data.radius = level.boss_radius
+	data.body_color = level.boss_color
+	data.knockback_resist = 0.05
+	data.min_elapsed = 99999.0
+	data.weight = 0.0
+	data.pack_size = 1
+	return data
 
 
 ## 挑战模式专用：从「[id, 出场秒数]」名单里加权抽一种。

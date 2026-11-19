@@ -25,6 +25,27 @@ const TIER_COLORS: Array[Color] = [
 	Color(1.00, 0.38, 0.44),
 ]
 
+## 最后这一段时间的「墓主追击」。每关必出一只，从最远的角落入场，全程锁定玩家。
+## 用固定 30 秒而不是关卡时长的百分比：短关卡也必须留出足够长的逃命时间，
+## 长关卡则不能把 boss 拖成半场马拉松。
+const BOSS_WINDOW: float = 30.0
+## 每关一只，名字跟着墓室主题走。选关详情与 HUD 都从这里读，避免两处写出不同名字。
+const BOSS_NAMES: Array[String] = [
+	"鲁殇王", "积尸地母", "鸡冠蛇王", "禁婆",
+	"天宫守将", "青铜树魈", "西王母尸", "万奴王",
+]
+## 每关主色：从尸变暗红一路走到风雪里的苍白金，和八张地面贴图各自呼应。
+const BOSS_COLORS: Array[Color] = [
+	Color(0.72, 0.30, 0.28),
+	Color(0.66, 0.42, 0.24),
+	Color(0.32, 0.56, 0.38),
+	Color(0.34, 0.52, 0.72),
+	Color(0.52, 0.68, 0.78),
+	Color(0.62, 0.48, 0.26),
+	Color(0.76, 0.32, 0.42),
+	Color(0.86, 0.78, 0.62),
+]
+
 @export var id: String = "ch1"
 @export var display_name: String = "关卡"
 @export var subtitle: String = ""
@@ -60,6 +81,15 @@ const TIER_COLORS: Array[Color] = [
 
 ## 该关的墓室尺寸。空间本身就是难度：越靠后的关越窄，绕不开就只能硬顶。
 @export var arena_size: Vector2 = Vector2(2100.0, 1450.0)
+
+## 最后 BOSS_WINDOW 秒登场的墓主。数值由 _apply_boss_balance() 按关卡序号插值写入，
+## 关卡表本身不重复写八组数字 —— 和场地尺寸一个道理。
+@export var boss_name: String = ""
+@export var boss_health: float = 0.0
+@export var boss_speed: float = 0.0
+@export var boss_damage: float = 0.0
+@export var boss_radius: float = 0.0
+@export var boss_color: Color = Color(0.72, 0.30, 0.28)
 
 static var _levels: Array[ChallengeData] = []
 
@@ -205,34 +235,63 @@ static func _build() -> void:
 			2.6, 3, 50.0, 16.0, 20))
 
 	_apply_arena_balance()
+	_apply_boss_balance()
 
 
-## 收窄场地之后的难度补偿。
+## 收窄场地之后的难度补偿 + 整体提难。
 ##
 ## 原来的数值是给无限地图配的：邪物追不上玩家就永远追不上，只要一直跑就很难
 ## 被围住。改成封闭墓室之后，同屏的怪不需要「跑得比玩家快」也能合围，
 ## 被逼到墙角更是无路可退 —— 同样的同屏上限，真正压在身上的怪多得多。
-## 所以按统一比例把「同时能压上来多少」调回去：
-##   同屏上限 ×0.82、刷怪间隔 ×1.12、每批数量上限 −1、晚期移速 ×0.92、碎石 −2。
-## 关卡之间的递进关系不变，整条曲线只是整体下移一档。
+##
+## 提难时刻意只动「统一补偿系数」，不逐关改八组数字：关卡之间的递进曲线
+## 形状完全保留，整条曲线只是平稳上抬一档，不会把某一关单独抬成断崖。
+## 相对上一版（0.82 / 1.12 / 0.92 / −2）：
+##   同屏上限 ×0.90（+10%）、刷怪间隔 ×1.03（快 8%）、晚期移速 ×0.96（+4%）、
+##   血量 ×1.08、接触伤害 ×1.06、碎石上限只 −1（走位更紧）。
+## 每批数量上限仍 −1：最后 30 秒还有大 boss 压场，再放开批量刷怪会直接糊屏。
 ##
 ## 场地尺寸也在这里定：用插值而不是逐关写死，改关卡总数时不用重新调八个数字。
 static func _apply_arena_balance() -> void:
-	const CAP_SCALE: float = 0.82
-	const INTERVAL_SCALE: float = 1.12
-	const SPEED_SCALE: float = 0.92
+	const CAP_SCALE: float = 0.90
+	const INTERVAL_SCALE: float = 1.03
+	const SPEED_SCALE: float = 0.96
+	const HP_SCALE: float = 1.08
+	const DAMAGE_SCALE: float = 1.06
 	for i in _levels.size():
 		var level: ChallengeData = _levels[i]
 		level.cap_span *= CAP_SCALE
 		level.interval_span *= INTERVAL_SCALE
 		level.speed_span.y *= SPEED_SCALE
+		level.hp_span *= HP_SCALE
+		level.damage_span *= DAMAGE_SCALE
 		level.pack_span.y = maxf(level.pack_span.x, level.pack_span.y - 1.0)
-		level.obstacle_max = maxi(6, level.obstacle_max - 2)
+		level.obstacle_max = maxi(6, level.obstacle_max - 1)
 		# 第一关最宽敞（留出熟悉操作的空间），终章最窄（墙角最要命）。
 		var t: float = float(i) / float(maxi(1, _levels.size() - 1))
 		level.arena_size = Vector2(
 			lerpf(2150.0, 1800.0, t),
 			lerpf(1500.0, 1250.0, t))
+
+
+## 每关墓主的数值。用插值而不是逐关写死，关卡数变化时自动重新铺开。
+##
+## 速度是最要紧的一项：玩家基准速度 190。第一关 172（明显跑得掉，只是
+## 一直被跟着，给新手留出「原来会被追」的印象），终章 198（比玩家快一点，
+## 必须靠走位绕碎石、突进技能或清出一条路）。八关平滑过渡，不会突然无解。
+##
+## 血量刻意给得很厚：墓主是「躲 30 秒」的威胁，不是「必须在 30 秒内打死」
+## 的靶子。真被玩家火力压死也照样算击杀、掉宝石，只是不必作为通关条件。
+static func _apply_boss_balance() -> void:
+	for i in _levels.size():
+		var level: ChallengeData = _levels[i]
+		var t: float = float(i) / float(maxi(1, _levels.size() - 1))
+		level.boss_name = BOSS_NAMES[clampi(i, 0, BOSS_NAMES.size() - 1)]
+		level.boss_color = BOSS_COLORS[clampi(i, 0, BOSS_COLORS.size() - 1)]
+		level.boss_health = lerpf(220.0, 1100.0, t)
+		level.boss_speed = lerpf(172.0, 198.0, t)
+		level.boss_damage = lerpf(14.0, 26.0, t)
+		level.boss_radius = lerpf(34.0, 46.0, t)
 
 
 static func _make(id: String, display_name: String, subtitle: String, tier: Tier,
