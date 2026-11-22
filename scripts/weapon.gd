@@ -146,7 +146,9 @@ func _damage_in_radius(center: Vector2, radius: float) -> void:
 		var distance: float = center.distance_squared_to(enemy.global_position)
 		if distance <= hit_reach * hit_reach:
 			in_range.append(enemy)
-			distances.append(distance)
+			# 和自动瞄准同一套优先级：范围武器有 max_targets 上限，
+			# 不能让墓主因为站得稍远就被一圈小怪挤出命中名单。
+			distances.append(distance * (0.2 if enemy.is_boss else 1.0))
 
 	var limit: int = mini(max_targets, in_range.size())
 	if limit <= 0:
@@ -178,14 +180,21 @@ func _damage_in_radius(center: Vector2, radius: float) -> void:
 ## 本帧刚死、下一帧就消失的尸体飞过去，白白浪费一发。
 func _nearest_enemy(max_range: float) -> Enemy:
 	var best: Enemy = null
-	var best_distance: float = max_range * max_range
+	var best_score: float = max_range * max_range
 	for node: Node in get_tree().get_nodes_in_group("enemies"):
 		var enemy := node as Enemy
 		if enemy == null or not is_instance_valid(enemy) or enemy.is_queued_for_deletion():
 			continue
 		var distance: float = global_position.distance_squared_to(enemy.global_position)
-		if distance < best_distance:
-			best_distance = distance
+		if distance > max_range * max_range:
+			continue
+		# 墓主是挑战关的通关目标，距离平方按 0.2 倍（相当于实际距离打四五折）
+		# 参与比较。它体型大、被软阻挡推得比杂兵远，纯比距离会让自动武器
+		# 永远锁在贴脸小怪身上，玩家明明在输出却打不掉 boss，关卡变成僵局。
+		# 折扣只在「差不多近」时生效：远在半屏外的墓主抢不走贴脸杂兵的火力。
+		var score: float = distance * (0.2 if enemy.is_boss else 1.0)
+		if score < best_score:
+			best_score = score
 			best = enemy
 	return best
 

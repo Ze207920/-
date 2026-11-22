@@ -82,6 +82,50 @@ class DeathBurst extends Node2D:
 		draw_arc(Vector2.ZERO, radius, 0.0, TAU, 18, ring, 2.0, true)
 
 
+## 墓主「墓气震荡」：一圈向外扩散的红环。伤害在波前缘扫过玩家时才结算，
+## 玩家看见红环往外扩还有约半秒可以跑出圈外，而不是瞬间莫名掉血。
+## 只结算一次（_hit），且走 Player.take_damage 的无敌帧，不会和杂兵伤害叠成秒杀。
+class BossWave extends Node2D:
+	const DURATION: float = 0.55
+
+	var max_radius: float = 190.0
+	var damage: float = 10.0
+	var target: Player = null
+	var _life: float = 0.0
+	var _hit: bool = false
+
+	func setup(origin: Vector2, radius: float, amount: float, player_ref: Player) -> void:
+		global_position = origin
+		max_radius = radius
+		damage = amount
+		target = player_ref
+		z_index = -5
+
+	func _process(delta: float) -> void:
+		_life += delta
+		if _life >= DURATION:
+			queue_free()
+			return
+		var front: float = max_radius * (_life / DURATION)
+		if not _hit and is_instance_valid(target):
+			if global_position.distance_to(target.global_position) <= front + 14.0:
+				_hit = true
+				target.take_damage(damage)
+		queue_redraw()
+
+	func _draw() -> void:
+		var t: float = clampf(_life / DURATION, 0.0, 1.0)
+		var front: float = max_radius * t
+		# 四段带缺口的断续弧，而不是一整圈：读起来是向外推的冲击波，
+		# 不会看起来像套在墓主身上的光环。四段比一整圈还少画几个点。
+		var alpha: float = (1.0 - t) * 0.52
+		var color: Color = Color(0.98, 0.38, 0.26, alpha)
+		for i in 4:
+			var from: float = float(i) * TAU * 0.25 + 0.20
+			var to: float = float(i + 1) * TAU * 0.25 - 0.20
+			draw_arc(Vector2.ZERO, front, from, to, 10, color, 3.0, true)
+
+
 ## 场景状态。暂停、开始界面、结算界面都靠它切换，而不是散落的布尔量。
 enum State {
 	TITLE,
@@ -199,6 +243,13 @@ var kills: int = 0
 ## 挑战关最后 30 秒的墓主。单独留引用是为了 HUD 血条与「不被回收机制瞬移」。
 var _boss: Enemy = null
 var _boss_spawned: bool = false
+## 墓主已被击杀 = 本关通关。用标记而不是在 died 回调里立刻 _finish：
+## 回调还压在 Enemy.take_damage 的调用栈里（queue_free 尚未完成），
+## 当场切状态容易读到已释放节点；下一帧由 _physics_process 统一收尾更稳。
+var _boss_defeated: bool = false
+## 关卡时间走完、墓主却还活着：不限时决战。此时压低杂兵上限，
+## 让玩家能把自动瞄准的火力集中到墓主身上，而不是永远被小怪挡枪。
+var _in_showdown: bool = false
 
 ## 当前关卡；生存模式下为 null，所有分支都用它区分两种玩法。
 var _level: ChallengeData = null
@@ -217,7 +268,12 @@ var _shake: float = 0.0
 var _recycle_timer: float = 0.0
 var _floor: Sprite2D = null
 ## 可走区域。所有「能不能站在这儿」的判断都走它：玩家夹制、邪物夹制、刷怪落点。
+## 挑战模式里这个矩形会随关卡进度逐帧收缩，其余系统只需重新读取它。
 var _arena: Rect2 = Rect2()
+## 开局尺寸与当前收缩比例（1.0 = 未收缩）。收缩的中心固定在原点。
+var _arena_base: Vector2 = Vector2.ZERO
+var _arena_ratio: float = 1.0
+var _arena_redraw_timer: float = 0.0
 ## 本关主题（地面贴图 / 四壁 / 氛围 / 碎石材质）。生存模式是默认墓室。
 var _theme: ArenaTheme = null
 ## 四壁的绘制节点。纯视觉，约束逻辑不在这里。
@@ -286,6 +342,9 @@ func _build_floor() -> void:
 ## 生存模式永远是最初那间青灰墓室。
 func _build_arena() -> void:
 	var size: Vector2 = _level.arena_size if _level != null else ARENA_SIZE
+	_arena_base = size
+	_arena_ratio = 1.0
+	_arena_redraw_timer = 0.0
 	_arena = Rect2(-size * 0.5, size)
 	_theme = ArenaTheme.for_level(_level)
 	_walls = ArenaWalls.new()
@@ -303,15 +362,78 @@ func confine_to_arena(pos: Vector2, radius: float) -> Vector2:
 	return pos.clamp(_arena.position + margin, _arena.end - margin)
 
 
+## 墓室随关卡进度平滑收缩。所有系统只读 _arena，所以这里改一次矩形、
+## 再同步几处持有边界「值拷贝」的对象就够了。
+## 墙的砖缝 / 冰裂纹每帧重建绘制指令没必要，0.12 秒重绘一次肉眼无差。
+func _tick_arena_shrink(delta: float) -> void:
+	if _level == null:
+		return
+	var t: float = clampf(_elapsed / maxf(1.0, _level.duration), 0.0, 1.0)
+	var w: float = clampf((t - ChallengeData.ARENA_SHRINK_START)
+			/ (1.0 - ChallengeData.ARENA_SHRINK_START), 0.0, 1.0)
+	# smoothstep：首尾平缓、中段最快，但整体仍接近线性 —— 墙在往里推一目了然。
+	# 决战阶段 t 被钳在 1，场地停在最小尺寸，不会无限缩到把人挤死。
+	var eased: float = w * w * (3.0 - 2.0 * w)
+	var target_ratio: float = lerpf(1.0, _level.arena_final_scale, eased)
+	if is_equal_approx(_arena_ratio, target_ratio):
+		return
+	_arena_ratio = target_ratio
+	var size: Vector2 = _arena_base * _arena_ratio
+	_arena = Rect2(-size * 0.5, size)
+
+	# 玩家与邪物都持有 Rect2 的值拷贝，必须逐个重新注入并立刻夹一次，
+	# 否则收缩那一帧会有单位停在墙外（看起来像穿墙）。
+	if is_instance_valid(player):
+		player.arena_rect = _arena
+		player.global_position = player.confine_to_arena(player.global_position)
+	for enemy: Enemy in enemies:
+		if not is_instance_valid(enemy):
+			continue
+		enemy.arena_rect = _arena
+		var margin: Vector2 = Vector2(enemy.radius, enemy.radius)
+		enemy.global_position = enemy.global_position.clamp(
+				_arena.position + margin, _arena.end - margin)
+	# 越界碎石直接回收：留在墙外既看不见，又白占同屏上限。
+	for i in range(_obstacles.size() - 1, -1, -1):
+		var rock: Obstacle = _obstacles[i]
+		if not is_instance_valid(rock):
+			_obstacles.remove_at(i)
+		elif not _arena.has_point(rock.global_position):
+			_obstacles.remove_at(i)
+			rock.queue_free()
+	# 相机限制每帧跟上（很便宜），墙的重绘节流到 0.12 秒一次。
+	if _camera != null:
+		_camera.limit_left = int(_arena.position.x - CAMERA_MARGIN)
+		_camera.limit_top = int(_arena.position.y - CAMERA_MARGIN)
+		_camera.limit_right = int(_arena.end.x + CAMERA_MARGIN)
+		_camera.limit_bottom = int(_arena.end.y + CAMERA_MARGIN)
+	_arena_redraw_timer += delta
+	var redraw: bool = _arena_redraw_timer >= 0.12
+	if redraw:
+		_arena_redraw_timer = 0.0
+	# 边界每帧都同步（其它系统可能读它），只有重绘按 0.12 秒节流。
+	_walls.update_bounds(_arena, Rect2(-_arena_base * 0.5, _arena_base), redraw)
+
+
 func _physics_process(delta: float) -> void:
 	if _state != State.PLAYING or not is_instance_valid(player):
 		return
 	_elapsed += delta
-	# 通关判定放在刷怪之前：到点的那一帧不该再往场上丢一批新怪，
-	# 否则玩家会在胜利瞬间被刚出生的怪撞掉血，甚至判成失败。
-	if _level != null and _elapsed >= _level.duration:
+	# 通关判定放在最前：打倒墓主的下一帧就收尾，不会在胜利瞬间又刷一批新怪、
+	# 又结算一次接触伤害。
+	# 注意通关条件已经不是「熬满 duration」——时间到而墓主还活着会进入决战，
+	# 一直到把它打倒为止；提前打倒则直接通关。
+	if _level != null and _boss_defeated:
 		_finish(true)
 		return
+	var was_showdown: bool = _in_showdown
+	_in_showdown = _level != null and _elapsed >= _level.duration
+	if _in_showdown and not was_showdown:
+		# 阶段切换立刻刷新 HUD，不等 0.15 秒的常规刷新节奏 —— 否则玩家会看到
+		# 「时间归零、目标却还写着倒计时」的一瞬，以为卡住了。
+		_refresh_hud()
+		_queue_toast("时间到！墓主未除，击败它才能离开")
+	_tick_arena_shrink(delta)
 	_tick_boss()
 	_tick_spawning(delta)
 	_tick_recycle(delta)
@@ -663,6 +785,16 @@ func _on_character_closed() -> void:
 
 # ---------------------------------------------------------------- 刷怪
 
+## 墓主放「墓气震荡」：生一圈扩散波纹，由波纹自己在前缘扫到玩家时结算伤害。
+## 主场景只负责把节点挂进世界和一点镜头震动，不在这里直接扣血。
+func _on_boss_shockwave(origin: Vector2, radius: float, damage: float) -> void:
+	var wave := BossWave.new()
+	add_child(wave)
+	wave.setup(origin, radius, damage, player)
+	_shake = clampf(_shake + 0.28, 0.0, 1.0)
+	AudioManager.play("hit")
+
+
 ## 挑战关最后 BOSS_WINDOW 秒放出该关墓主，一局只放一次。
 ## 放在刷怪之前：到点那一帧不会先丢一批杂兵、再让 boss 从怪堆里挤出来。
 func _tick_boss() -> void:
@@ -683,10 +815,13 @@ func _tick_boss() -> void:
 	add_child(boss)
 	boss.global_position = point
 	boss.died.connect(_on_enemy_died)
+	boss.boss_shockwave.connect(_on_boss_shockwave)
 	enemies.append(boss)
 	_boss = boss
-	_queue_toast("%s 苏醒！最后 30 秒，它会一直追着你" % _level.boss_name)
+	_queue_toast("%s 苏醒！击败它才能离开墓室" % _level.boss_name)
 	AudioManager.play("levelup")
+	# 血条和目标文案在墓主登场这一帧就该出现，不等下一次 HUD 轮询。
+	_refresh_hud()
 
 
 ## 墓主从「视野边缘再远一点」的场地边入场：约 640 像素，两三秒就能压到脸上。
@@ -733,6 +868,10 @@ func _boss_spawn_point(radius: float) -> Vector2:
 func _tick_spawning(delta: float) -> void:
 	var curve: PackedFloat32Array = difficulty_at(_elapsed)
 	var cap: int = mini(int(curve[3]), max_enemies)
+	# 决战阶段不再往场上堆新怪：墓主是唯一目标，杂兵太密会让自动武器
+	# 永远锁在小怪身上，玩家明明在输出却打不动 boss，变成无解的僵局。
+	if _in_showdown:
+		cap = maxi(12, int(float(cap) * 0.68))
 	if enemies.size() >= cap:
 		return
 	_spawn_timer += delta
@@ -1006,9 +1145,12 @@ func _prune_gems() -> void:
 
 func _on_enemy_died(enemy: Enemy) -> void:
 	enemies.erase(enemy)
-	# 墓主真被火力压死也照样算击杀、掉宝石，只是不再补刷第二只。
+	# 打倒墓主 = 完成本关。仍然按普通击杀结算宝石与特效，只是不补刷第二只。
+	# 真正切到结算页由 _physics_process 在下一帧做。
 	if enemy == _boss:
 		_boss = null
+		_boss_defeated = true
+		_queue_toast("%s 伏诛！墓室出口打开了" % (_level.boss_name if _level != null else "墓主"))
 	kills += 1
 	AudioManager.play("kill")
 	_spawn_burst(enemy.global_position, enemy.body_color, enemy.radius)
@@ -1176,15 +1318,29 @@ func _refresh_hud() -> void:
 	hud.kills = kills
 	hud.elapsed = _elapsed
 	hud.enemy_count = enemies.size()
-	# 挑战模式下 HUD 顶部多一行关卡名与倒计时，生存模式传空值让 HUD 跳过绘制。
+	# 挑战模式下 HUD 顶部多一行关卡名与当前目标，生存模式传空值让 HUD 跳过绘制。
+	# 目标文案按四个阶段切换：等墓主 → 打墓主 → 超时决战 → 已击破。
 	if _level != null:
+		var remain: float = maxf(0.0, _level.duration - _elapsed)
+		var remain_text: String = "%02d:%02d" % [int(remain) / 60, int(remain) % 60]
 		hud.challenge_name = _level.display_name
-		hud.challenge_remaining = maxf(0.0, _level.duration - _elapsed)
+		hud.challenge_remaining = remain
 		hud.challenge_progress = clampf(_elapsed / maxf(1.0, _level.duration), 0.0, 1.0)
+		hud.arena_ratio = _arena_ratio
+		if _boss_defeated:
+			hud.challenge_objective = "墓主已除 · 出口开启"
+		elif _in_showdown:
+			hud.challenge_objective = "决战 · 击败墓主才能离开"
+		elif _boss != null and is_instance_valid(_boss):
+			hud.challenge_objective = "击败 %s 才能通关   %s" % [_level.boss_name, remain_text]
+		else:
+			hud.challenge_objective = "墓主苏醒倒计时 %s" % remain_text
 	else:
 		hud.challenge_name = ""
 		hud.challenge_remaining = -1.0
 		hud.challenge_progress = -1.0
+		hud.challenge_objective = ""
+		hud.arena_ratio = 1.0
 	# 墓主血条：从苏醒那一刻起一直显示到本关结束，玩家能判断该躲还是该硬拼。
 	if _boss != null and is_instance_valid(_boss):
 		hud.boss_name = _level.boss_name if _level != null else "墓主"

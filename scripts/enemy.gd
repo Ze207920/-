@@ -9,6 +9,9 @@ extends CharacterBody2D
 
 ## 血量归零时发出，携带自身引用供生成器从活跃列表中移除。
 signal died(enemy: Enemy)
+## 墓主释放「墓气震荡」时发出。Enemy 只决定时机与位置，
+## 伤害判定和波纹绘制交给主场景 —— 敌人节点不该反向依赖场景根节点。
+signal boss_shockwave(origin: Vector2, radius: float, damage: float)
 
 ## 击退速度的衰减率（像素/秒²）。140 初速约 0.16 秒衰减干净，位移约 11 像素。
 const KNOCKBACK_DECAY: float = 900.0
@@ -45,6 +48,25 @@ const SHADOW: Color = Color(0.0, 0.0, 0.0, 0.24)
 @export var knockback_resist: float = 1.0
 ## 挑战关最后 30 秒的墓主。由 EnemyData.boss_for() 注入，只在入树前设置一次。
 @export var is_boss: bool = false
+
+## 墓主技能参数。level：1 只会突进、2 再加震荡波、3 两招冷却更短伤害更高。
+## 全部由 EnemyData.boss_for() 按关卡注入，普通邪物保持 0（不跑技能状态机）。
+@export var boss_skill_level: int = 0
+@export var boss_skill_interval: float = 6.0
+@export var boss_skill_damage: float = 10.0
+@export var boss_skill_radius: float = 190.0
+
+## 技能状态机。用「蓄力 → 冲刺 → 冷却」三段，蓄力时定住不动、光环转亮，
+## 给玩家半秒反应时间；震荡波同理靠扩散前缘延后结算伤害。
+const BOSS_WINDUP: float = 0.32
+const BOSS_CHARGE_DURATION: float = 0.85
+const BOSS_CHARGE_MULTIPLIER: float = 2.7
+var _skill_timer: float = 0.0
+var _skill_cast_count: int = 0
+var _windup_timer: float = 0.0
+var _charge_timer: float = 0.0
+var _charge_dir: Vector2 = Vector2.ZERO
+var _skill_flash: float = 0.0
 
 ## 所属种类，供上层查询 id / 名称。
 var data: EnemyData = null
@@ -95,6 +117,13 @@ func apply_data(source: EnemyData) -> void:
 	body_color = source.body_color
 	radius = source.radius
 	knockback_resist = source.knockback_resist
+	boss_skill_level = source.boss_skill_level
+	boss_skill_interval = source.boss_skill_interval
+	boss_skill_damage = source.boss_skill_damage
+	boss_skill_radius = source.boss_skill_radius
+	# 第一次施法别等满一个冷却：墓主一登场就该让玩家意识到「它会放招」。
+	_skill_timer = boss_skill_interval * 0.45
+	_skill_cast_count = 0
 	_base_health = source.max_health
 	_base_speed = source.move_speed
 	_base_damage = source.contact_damage
@@ -126,20 +155,19 @@ func _build_collision() -> void:
 
 
 func _physics_process(delta: float) -> void:
-	# 光环是随时间脉动的，只有墓主需要每帧重绘；普通邪物仍只在受击时重绘，
-	# 同屏两百只时不会因为多一个 boss 就多两百次绘制指令重建。
-	if is_boss:
-		queue_redraw()
 	if _flash > 0.0:
 		_flash = maxf(0.0, _flash - delta)
-		# 用 modulate 而不是「改颜色 + queue_redraw」来表现闪白：
-		# 上百只怪同时挨打时，每帧逐个重绘是纯粹的浪费，而 modulate 只在
-		# 渲染阶段乘一下，不触发任何重绘。
-		if _flash > 0.0:
-			var t: float = _flash / FLASH_TIME
-			modulate = Color(1.0 + 0.9 * t, 1.0 + 0.7 * t, 1.0 + 0.7 * t)
-		else:
-			modulate = Color.WHITE
+	# 受击闪白、蓄力预警都走 modulate：不触发重绘，同屏上百只时几乎零开销。
+	# 墓主不再画常驻光环，蓄力时只让本体短暂泛暖红 —— 仍能读出「它要动了」，
+	# 但画面上不会套着一圈圈同心圆。受击闪白优先级更高。
+	var hit_t: float = clampf(_flash / FLASH_TIME, 0.0, 1.0)
+	var charge_t: float = clampf(_skill_flash / 0.6, 0.0, 1.0) if is_boss else 0.0
+	if hit_t > 0.0:
+		modulate = Color(1.0 + 0.9 * hit_t, 1.0 + 0.7 * hit_t, 1.0 + 0.7 * hit_t)
+	elif charge_t > 0.0:
+		modulate = Color(1.0 + 0.26 * charge_t, 1.0 - 0.05 * charge_t, 1.0 - 0.20 * charge_t)
+	else:
+		modulate = Color.WHITE
 
 	var chase: Vector2 = Vector2.ZERO
 	if is_instance_valid(_target):
@@ -148,6 +176,15 @@ func _physics_process(delta: float) -> void:
 			chase = to_target.normalized() * move_speed
 	# 刻意不做朝向旋转：这四种邪物都是正面朝镜头的站姿，转过身后血条会
 	# 跟着歪，玩家反而读不出剩余血量。方向感交给眼睛和身形倾斜。
+
+	# 墓主技能：蓄力定住、冲刺覆盖追击方向。信号在技能状态机里发出，
+	# 上层负责波纹与伤害，这里不碰玩家节点。
+	if is_boss and boss_skill_level > 0:
+		_tick_boss_skills(delta)
+		if _windup_timer > 0.0:
+			chase = Vector2.ZERO
+		elif _charge_timer > 0.0:
+			chase = _charge_dir * move_speed * BOSS_CHARGE_MULTIPLIER
 
 	velocity = chase + _knockback + _push
 	move_and_slide()
@@ -160,6 +197,38 @@ func _physics_process(delta: float) -> void:
 
 	_knockback = _knockback.move_toward(Vector2.ZERO, KNOCKBACK_DECAY * delta)
 	_push = _push.move_toward(Vector2.ZERO, PUSH_DECAY * delta)
+
+
+## 墓主技能状态机。两招交替，等级 1 只有突进，等级 2 起加入震荡波，
+## 等级 3 冷却缩短 18%。突进前有 0.32 秒蓄力（定住 + 光环变亮），
+## 震荡波靠扩散前缘延后命中，两者都给玩家留出可读的反应窗口。
+func _tick_boss_skills(delta: float) -> void:
+	if boss_skill_level <= 0 or not is_instance_valid(_target):
+		return
+	_skill_flash = maxf(0.0, _skill_flash - delta)
+
+	# 蓄力结束才锁定方向：锁早了玩家一个变向就能让冲刺完全打空。
+	if _windup_timer > 0.0:
+		_windup_timer = maxf(0.0, _windup_timer - delta)
+		if _windup_timer <= 0.0:
+			_charge_dir = (_target.global_position - global_position).normalized()
+			_charge_timer = BOSS_CHARGE_DURATION
+		return
+	if _charge_timer > 0.0:
+		_charge_timer = maxf(0.0, _charge_timer - delta)
+		return
+
+	_skill_timer -= delta
+	if _skill_timer > 0.0:
+		return
+	_skill_timer = boss_skill_interval * (0.82 if boss_skill_level >= 3 else 1.0)
+	_skill_cast_count += 1
+	if boss_skill_level >= 2 and _skill_cast_count % 2 == 0:
+		_skill_flash = 0.55
+		boss_shockwave.emit(global_position, boss_skill_radius, boss_skill_damage)
+	else:
+		_windup_timer = BOSS_WINDUP
+		_skill_flash = BOSS_WINDUP + BOSS_CHARGE_DURATION
 
 
 ## 夹进场地。放在所有位移之后：_keep_outside_target 会把自己从玩家身上推开，
@@ -262,22 +331,7 @@ func _keep_outside_target() -> void:
 # 16~55 像素，玩家根本没机会看清爪子和鳞片。所以刻意把四种轮廓做成
 # 瘦长人形 / 盘曲细颈 / 宽胖壮汉 / 扁圆甲虫，让剪影本身就互不相似。
 
-## 墓主的追击光环：脚下阴影 + 两圈呼吸红环。刻意不画名字，避免给敌人节点
-## 引入中文字体依赖；名字与血量交给 HUD 统一显示。
-func _draw_boss_aura() -> void:
-	var pulse: float = 0.5 + 0.5 * sin(float(Time.get_ticks_msec()) / 260.0)
-	_ground_shadow(1.18, 0.42, 1.08)
-	var r := Vector2(radius * 1.30, radius * 1.16)
-	_ellipse_arc(Vector2.ZERO, r, 0.0, TAU,
-			Color(0.96, 0.28, 0.22, 0.30 + 0.26 * pulse), 3.0)
-	_ellipse_arc(Vector2.ZERO, r * 1.14, 0.0, TAU,
-			Color(0.98, 0.42, 0.20, 0.12 + 0.12 * pulse), 2.0)
-
-
 func _draw() -> void:
-	# 墓主光环画在造型缩放之前：它按绝对半径取值，不跟着 _art_scale() 缩。
-	if is_boss:
-		_draw_boss_aura()
 	# 小体型的两只（蛇 r=10、尸蟞 r=8）在实机里只剩一个色点，造型全糊。
 	# 视觉上放大两成不改碰撞半径：判定保持原样，纯粹让它们更容易被看见。
 	var s: float = _art_scale()
@@ -292,7 +346,10 @@ func _draw() -> void:
 			_draw_beetle()
 		_:
 			_draw_zombie()
-	_draw_health_ring()
+	# 血量环只给普通邪物：墓主的血量已由 HUD 顶部专属红条显示，
+	# 脚下再套一圈绿环既冗余，又和技能波纹叠成好几个同心圆。
+	if not is_boss:
+		_draw_health_ring()
 	if not is_equal_approx(s, 1.0):
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 

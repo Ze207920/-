@@ -33,6 +33,13 @@ enum Kind {
 ## 所以普通抽签永远抽不到它；Enemy 会据此换掉碰撞遮罩并画追击光环。
 @export var is_boss: bool = false
 
+## 墓主技能参数。只对 is_boss 生效，由 ChallengeData 按关卡注入。
+## level：1 只会突进、2 再加震荡波、3 两招都强化；其余三项是震荡波的节奏与威力。
+@export var boss_skill_level: int = 0
+@export var boss_skill_interval: float = 6.0
+@export var boss_skill_damage: float = 10.0
+@export var boss_skill_radius: float = 190.0
+
 ## 预设缓存。返回的是共享实例，调用方只读，不要就地改数值。
 static var _presets: Array[EnemyData] = []
 
@@ -94,6 +101,10 @@ static func boss_for(level: ChallengeData) -> EnemyData:
 	data.min_elapsed = 99999.0
 	data.weight = 0.0
 	data.pack_size = 1
+	data.boss_skill_level = level.boss_skill_level
+	data.boss_skill_interval = level.boss_skill_interval
+	data.boss_skill_damage = level.boss_skill_damage
+	data.boss_skill_radius = level.boss_skill_radius
 	return data
 
 

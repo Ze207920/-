@@ -52,7 +52,9 @@ const BOSS_COLORS: Array[Color] = [
 ## 选关界面底部的关卡特性说明，一句话讲清「这关和别关差在哪」。
 @export var blurb: String = ""
 @export var tier: Tier = Tier.EASY
-## 通关所需存活秒数。
+## 关卡时间轴长度。现在只负责「难度曲线走到哪儿、场地收缩到哪儿、墓主何时苏醒」，
+## 不再是通关条件 —— 真正的通关条件是击败本关墓主（见 Game._physics_process）。
+## 时间走完而墓主还活着，则进入不限时的决战，直到把它打倒。
 @export var duration: float = 60.0
 
 ## 以下六条曲线的起止值：x = 开局，y = 结束。
@@ -81,6 +83,11 @@ const BOSS_COLORS: Array[Color] = [
 
 ## 该关的墓室尺寸。空间本身就是难度：越靠后的关越窄，绕不开就只能硬顶。
 @export var arena_size: Vector2 = Vector2(2100.0, 1450.0)
+## 墓室随时间收缩的终点比例：0.70 表示边长只剩七成（面积约一半）。
+## 由 _apply_arena_balance() 按关卡序号插值写入，第一关留得多、终章收得最狠。
+@export var arena_final_scale: float = 0.76
+## 收缩从进度 8% 起，开局留一点时间让玩家认清场地；超时决战阶段不再继续收缩。
+const ARENA_SHRINK_START: float = 0.08
 
 ## 最后 BOSS_WINDOW 秒登场的墓主。数值由 _apply_boss_balance() 按关卡序号插值写入，
 ## 关卡表本身不重复写八组数字 —— 和场地尺寸一个道理。
@@ -90,6 +97,13 @@ const BOSS_COLORS: Array[Color] = [
 @export var boss_damage: float = 0.0
 @export var boss_radius: float = 0.0
 @export var boss_color: Color = Color(0.72, 0.30, 0.28)
+
+## 墓主技能。等级 1 = 只会「血影突进」，2 = 再加「墓气震荡」，3 = 两招都更快更疼。
+## 由 _apply_boss_balance() 按关卡序号写入，选关界面与 Enemy 都只读。
+@export var boss_skill_level: int = 1
+@export var boss_skill_interval: float = 6.0
+@export var boss_skill_damage: float = 10.0
+@export var boss_skill_radius: float = 190.0
 
 static var _levels: Array[ChallengeData] = []
 
@@ -139,7 +153,9 @@ func curve_at(elapsed: float) -> PackedFloat32Array:
 
 
 func objective_text() -> String:
-	return "存活 %d 秒" % int(duration)
+	# 通关目标已经从「熬满时间」换成「打倒墓主」，卡片上必须写清楚，
+	# 否则玩家会一直以为倒计时归零就赢了。时长仍然标出来，作为节奏参考。
+	return "击败墓主 · %d秒" % int(duration)
 
 
 ## 用实心/空心星表示档位，比纯文字标签更容易一眼扫过去。
@@ -238,7 +254,7 @@ static func _build() -> void:
 	_apply_boss_balance()
 
 
-## 收窄场地之后的难度补偿 + 整体提难。
+## 收窄场地之后的难度补偿 + 整体提难（第二次上调）。
 ##
 ## 原来的数值是给无限地图配的：邪物追不上玩家就永远追不上，只要一直跑就很难
 ## 被围住。改成封闭墓室之后，同屏的怪不需要「跑得比玩家快」也能合围，
@@ -246,18 +262,20 @@ static func _build() -> void:
 ##
 ## 提难时刻意只动「统一补偿系数」，不逐关改八组数字：关卡之间的递进曲线
 ## 形状完全保留，整条曲线只是平稳上抬一档，不会把某一关单独抬成断崖。
-## 相对上一版（0.82 / 1.12 / 0.92 / −2）：
-##   同屏上限 ×0.90（+10%）、刷怪间隔 ×1.03（快 8%）、晚期移速 ×0.96（+4%）、
-##   血量 ×1.08、接触伤害 ×1.06、碎石上限只 −1（走位更紧）。
+## 相对上一版（0.90 / 1.03 / 0.96 / 1.08 / 1.06），这一版：
+##   同屏上限 ×0.95（+6%）、刷怪间隔 ×0.99（快 4%）、晚期移速 ×0.98（+2%）、
+##   血量 ×1.13、接触伤害 ×1.09。
+## 数值只小幅抬：这一版新加了「墓室持续收缩」和「必须打倒墓主」，
+## 两者都是实打实的难度增量，杂兵再猛抬就会把决战阶段压成无解。
 ## 每批数量上限仍 −1：最后 30 秒还有大 boss 压场，再放开批量刷怪会直接糊屏。
 ##
-## 场地尺寸也在这里定：用插值而不是逐关写死，改关卡总数时不用重新调八个数字。
+## 场地尺寸与收缩终点也在这里定：用插值而不是逐关写死，改关卡总数时不用重调八个数字。
 static func _apply_arena_balance() -> void:
-	const CAP_SCALE: float = 0.90
-	const INTERVAL_SCALE: float = 1.03
-	const SPEED_SCALE: float = 0.96
-	const HP_SCALE: float = 1.08
-	const DAMAGE_SCALE: float = 1.06
+	const CAP_SCALE: float = 0.95
+	const INTERVAL_SCALE: float = 0.99
+	const SPEED_SCALE: float = 0.98
+	const HP_SCALE: float = 1.13
+	const DAMAGE_SCALE: float = 1.09
 	for i in _levels.size():
 		var level: ChallengeData = _levels[i]
 		level.cap_span *= CAP_SCALE
@@ -272,6 +290,8 @@ static func _apply_arena_balance() -> void:
 		level.arena_size = Vector2(
 			lerpf(2150.0, 1800.0, t),
 			lerpf(1500.0, 1250.0, t))
+		# 收缩也一样前松后紧：第一关只收到 82%，终章收到 70%。
+		level.arena_final_scale = lerpf(0.82, 0.70, t)
 
 
 ## 每关墓主的数值。用插值而不是逐关写死，关卡数变化时自动重新铺开。
@@ -280,8 +300,12 @@ static func _apply_arena_balance() -> void:
 ## 一直被跟着，给新手留出「原来会被追」的印象），终章 198（比玩家快一点，
 ## 必须靠走位绕碎石、突进技能或清出一条路）。八关平滑过渡，不会突然无解。
 ##
-## 血量刻意给得很厚：墓主是「躲 30 秒」的威胁，不是「必须在 30 秒内打死」
-## 的靶子。真被玩家火力压死也照样算击杀、掉宝石，只是不必作为通关条件。
+## 血量沿用「厚」的设定：墓主现在就是通关目标，玩家必须在杂兵环绕里把火力
+## 集中到它身上。时间走完还没打倒就进入决战、不再计时，所以不需要在
+## 30 秒窗口内勉强凑够伤害 —— 打得慢只是多熬一会儿，不会直接判负。
+##
+## 技能按三档递进：前两关只会突进（教会玩家「它会突然加速」），
+## 3~5 关加一圈墓气震荡（必须开始躲技能），6~8 关冷却更短、伤害更高。
 static func _apply_boss_balance() -> void:
 	for i in _levels.size():
 		var level: ChallengeData = _levels[i]
@@ -292,6 +316,10 @@ static func _apply_boss_balance() -> void:
 		level.boss_speed = lerpf(172.0, 198.0, t)
 		level.boss_damage = lerpf(14.0, 26.0, t)
 		level.boss_radius = lerpf(34.0, 46.0, t)
+		level.boss_skill_level = 1 if i < 2 else (2 if i < 5 else 3)
+		level.boss_skill_interval = lerpf(7.2, 4.2, t)
+		level.boss_skill_damage = lerpf(8.0, 15.0, t)
+		level.boss_skill_radius = lerpf(170.0, 230.0, t)
 
 
 static func _make(id: String, display_name: String, subtitle: String, tier: Tier,

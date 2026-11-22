@@ -141,8 +141,8 @@ func show_title(best: Dictionary = {}, progress: Dictionary = {},
 		"升级时从三个强化里挑一个",
 		"",
 		"生存模式    无尽，熬到倒下为止",
-		"挑战模式    八道关卡，由易到难",
-		"每关最后 30 秒    墓主苏醒，全程追击你",
+		"挑战模式    八关递进，墓室随时间收缩",
+		"每关最后 30 秒    墓主苏醒，击败它才能通关",
 	]
 	# 当前角色放在最显眼的位置：玩家进标题页第一件想确认的事就是"我在用谁"。
 	var character_name: String = String(character.get("name", ""))
@@ -213,6 +213,7 @@ func show_over(stats: Dictionary) -> void:
 	if challenge:
 		lines.append("第 %d 关    %s" % [
 			int(stats.get("level_index", 0)) + 1, String(stats.get("level_name", ""))])
+		lines.append("目标    击败本关墓主")
 		lines.append("")
 	lines.append("存活 %s" % String(stats.get("time_text", "00:00")))
 	lines.append("等级 %d    击杀 %d" % [

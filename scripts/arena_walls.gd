@@ -15,6 +15,9 @@ const VOID_COLOR: Color = Color(0.043, 0.047, 0.062)
 
 ## 可走区域（墙的内沿）。墙带从这个矩形向外画。
 var rect: Rect2 = Rect2()
+## 收缩前的原始边界。两者之间的那一圈是「已经被墓室吞掉的地方」，
+## 画成暗红雾，玩家能一眼看出墙在往里推、而不是画面自己缩了。
+var outer_bounds: Rect2 = Rect2()
 ## 墙带厚度。
 var thickness: float = 72.0
 
@@ -24,11 +27,23 @@ var theme: ArenaTheme = null
 
 func setup(bounds: Rect2, wall_thickness: float, theme_value: ArenaTheme = null) -> void:
 	rect = bounds
+	outer_bounds = bounds
 	thickness = wall_thickness
 	theme = theme_value
 	# 压在底面（-100）之上、所有角色之下。角色默认 z_index 0。
 	z_index = -90
 	queue_redraw()
+
+
+## 收缩时更新当前边界，同时记住原始边界供暗红雾使用。
+## 单独一个接口而不是复用 setup()，是为了不把 theme / thickness 也重设一遍。
+## redraw 可以关掉：边界必须每帧跟上逻辑，但砖缝/冰裂纹的重绘没必要每帧重建，
+## 由主场景节流到 0.12 秒一次。
+func update_bounds(bounds: Rect2, original: Rect2, redraw: bool = true) -> void:
+	rect = bounds
+	outer_bounds = original
+	if redraw:
+		queue_redraw()
 
 
 ## 主题缺省值：没传主题时退回最初的青灰墓室，保证预览场景不崩。
@@ -61,6 +76,7 @@ func _draw() -> void:
 		return
 
 	_draw_void()
+	_draw_shrink_fog()
 	_draw_ambient()
 	_draw_wall_bands()
 	match _style_id():
@@ -88,6 +104,28 @@ func _draw_void() -> void:
 	var right := Rect2(rect.end.x, rect.position.y, far, rect.size.y)
 	for piece: Rect2 in [top, bottom, left, right]:
 		draw_rect(piece, VOID_COLOR)
+
+
+## 收缩后「旧场地被吞掉」的那一圈暗红雾。四块矩形拼出环形，
+## 比逐帧渐变便宜得多；再沿当前内沿描一圈红线，明确标出还能站到哪儿。
+## 必须画在 _draw_void() 之后 —— 墙外先被涂黑，红雾才盖得上去。
+func _draw_shrink_fog() -> void:
+	if outer_bounds.size.x <= rect.size.x + 1.0 and outer_bounds.size.y <= rect.size.y + 1.0:
+		return
+	var fog: Color = Color(0.44, 0.10, 0.13, 0.34)
+	draw_rect(Rect2(outer_bounds.position.x, outer_bounds.position.y,
+			outer_bounds.size.x, maxf(0.0, rect.position.y - outer_bounds.position.y)), fog)
+	draw_rect(Rect2(outer_bounds.position.x, rect.end.y,
+			outer_bounds.size.x, maxf(0.0, outer_bounds.end.y - rect.end.y)), fog)
+	draw_rect(Rect2(outer_bounds.position.x, rect.position.y,
+			maxf(0.0, rect.position.x - outer_bounds.position.x), rect.size.y), fog)
+	draw_rect(Rect2(rect.end.x, rect.position.y,
+			maxf(0.0, outer_bounds.end.x - rect.end.x), rect.size.y), fog)
+	var edge: Color = Color(0.98, 0.32, 0.26, 0.42)
+	draw_line(Vector2(rect.position.x, rect.position.y), Vector2(rect.end.x, rect.position.y), edge, 2.0)
+	draw_line(Vector2(rect.position.x, rect.end.y), Vector2(rect.end.x, rect.end.y), edge, 2.0)
+	draw_line(Vector2(rect.position.x, rect.position.y), Vector2(rect.position.x, rect.end.y), edge, 2.0)
+	draw_line(Vector2(rect.end.x, rect.position.y), Vector2(rect.end.x, rect.end.y), edge, 2.0)
 
 
 ## 氛围罩：一整块低透明度的主题色盖在可走区域上。

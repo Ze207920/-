@@ -25,6 +25,11 @@ var challenge_name: String = ""
 var challenge_remaining: float = -1.0
 ## 关卡进度 0~1。-1 表示不在挑战模式。
 var challenge_progress: float = -1.0
+## 当前通关目标文案。由 Game 按「等墓主 / 打墓主 / 决战 / 已击破」四个阶段算好推过来，
+## HUD 只负责画，不反向判断游戏状态。
+var challenge_objective: String = ""
+## 墓室剩余尺寸比例（1.0 → 0.70）。收缩时才显示百分比。
+var arena_ratio: float = 1.0
 ## 当前角色名。空串表示不显示。
 var character_name: String = ""
 ## 技能栏：每个已解锁技能一格，各自显示冷却。手机上交给一排实体按钮，
@@ -131,16 +136,15 @@ func _draw_timer(view: Vector2) -> void:
 			UiStyle.TEXT, HORIZONTAL_ALIGNMENT_CENTER, 140.0)
 
 
-## 挑战模式专属：关卡名 + 剩余秒数 + 一条进度条。
-## 只给正计时不够 —— 这一局的目标是「活到 X 秒」，玩家真正关心的是还差多少，
-## 每次都要用总时长减一遍是不必要的脑力开销。
+## 挑战模式专属：关卡名 + 当前目标 + 进度条 + 收缩比例。
+## 通关条件已经从「熬满时间」换成「打倒墓主」，所以这里显示的是目标文案，
+## 不再写「剩余 XX」—— 那个数字现在只是墓主苏醒 / 场地收缩的时间轴。
 func _draw_challenge(view: Vector2) -> void:
 	if challenge_progress < 0.0:
 		return
-	var remaining: String = "%02d:%02d" % [int(challenge_remaining) / 60, int(challenge_remaining) % 60]
-	UiStyle.draw_label(self, Vector2(view.x * 0.5 - 170.0, 66.0),
-			"%s    剩余 %s" % [challenge_name, remaining], 12,
-			UiStyle.ACCENT, HORIZONTAL_ALIGNMENT_CENTER, 340.0)
+	UiStyle.draw_label(self, Vector2(view.x * 0.5 - 195.0, 66.0),
+			"%s    %s" % [challenge_name, challenge_objective], 12,
+			UiStyle.ACCENT, HORIZONTAL_ALIGNMENT_CENTER, 390.0)
 
 	var bar := Rect2(view.x * 0.5 - 120.0, 72.0, 240.0, 4.0)
 	draw_rect(Rect2(bar.position - Vector2(1.0, 1.0), bar.size + Vector2(2.0, 2.0)),
@@ -149,13 +153,17 @@ func _draw_challenge(view: Vector2) -> void:
 	var filled: float = clampf(challenge_progress, 0.0, 1.0)
 	if filled > 0.0:
 		draw_rect(Rect2(bar.position, Vector2(bar.size.x * filled, bar.size.y)), UiStyle.ACCENT)
+	if arena_ratio < 0.995:
+		UiStyle.draw_label(self, Vector2(view.x * 0.5 + 128.0, 66.0),
+				"墓室 %d%%" % int(round(arena_ratio * 100.0)), 11,
+				Color(1.0, 0.52, 0.36), HORIZONTAL_ALIGNMENT_LEFT, 90.0)
 
-	# 墓主登场后多一行红色追击警示 + 血条，和上面的蓝色通关进度分开，
-	# 玩家扫一眼就能分清「还剩多久」和「这东西还剩多少血」。
+	# 墓主登场后多一行红色警示 + 血条，和上面的蓝色时间轴分开，
+	# 玩家扫一眼就能分清「现在该干嘛」和「这东西还剩多少血」。
 	if boss_name != "":
 		var boss_fill: float = clampf(boss_ratio, 0.0, 1.0)
 		UiStyle.draw_label(self, Vector2(view.x * 0.5 - 170.0, 94.0),
-				"%s 追击中   %d%%" % [boss_name, int(boss_fill * 100.0)], 12,
+				"%s   %d%%    击败它才能通关" % [boss_name, int(boss_fill * 100.0)], 12,
 				UiStyle.HP, HORIZONTAL_ALIGNMENT_CENTER, 340.0)
 		var boss_bar := Rect2(view.x * 0.5 - 120.0, 98.0, 240.0, 4.0)
 		draw_rect(boss_bar, Color(0.13, 0.17, 0.23, 0.92))
