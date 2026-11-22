@@ -178,20 +178,25 @@ func show_pause() -> void:
 	_mode = Mode.PAUSE
 	_title.text = "已暂停"
 	_subtitle.text = "PAUSED"
+	# 明确告诉玩家「返回主菜单」会结束本局：这是从对局中途唯一能回标题页的入口，
+	# 不写清楚的话，玩家会以为按错了把进度弄丢了。
 	if is_touch_device():
-		_body.text = "点击「继续」回到游戏"
+		_body.text = "点击「继续」回到游戏；返回主菜单会结束本局。"
 	else:
-		_body.text = "按 ESC 继续游戏"
+		_body.text = "按 ESC 继续游戏；返回主菜单会结束本局。"
+	# 「返回主菜单」走已有的 title_requested → Game._back_to_title()：
+	# 它会清掉模式/关卡状态并重载场景，最终停在标题页。
 	_set_buttons([
 		{"text": "继续", "action": "resume"},
 		{"text": "重新开始", "action": "restart"},
+		{"text": "返回主菜单", "action": "title"},
 	])
 	# 静音入口：键盘端可用 M，但移动端没有键盘，必须给一个可点的按钮。
 	_add_mute_button()
 	if is_touch_device():
 		_hint.text = "点击按钮操作"
 	else:
-		_hint.text = "M 静音"
+		_hint.text = "ESC 继续    M 静音"
 	visible = true
 	_focus_first()
 
@@ -236,9 +241,12 @@ func show_over(stats: Dictionary) -> void:
 		buttons.append({"text": "下一关", "action": "next"})
 	buttons.append({"text": "再来一局", "action": "restart"})
 	if challenge:
+		# 「返回主菜单」放在「返回选关」之前：_set_buttons 把最后一个按钮设为
+		# ESC 的 secondary action，这样 ESC 仍回到选关，保持原来的操作习惯。
+		buttons.append({"text": "返回主菜单", "action": "title"})
 		buttons.append({"text": "返回选关", "action": "select"})
 	else:
-		buttons.append({"text": "返回标题", "action": "title"})
+		buttons.append({"text": "返回主菜单", "action": "title"})
 	_set_buttons(buttons)
 	_hint.text = "空格 继续    ESC 返回    M 静音"
 	visible = true
