@@ -243,12 +243,14 @@ var kills: int = 0
 ## 挑战关最后 30 秒的墓主。单独留引用是为了 HUD 血条与「不被回收机制瞬移」。
 var _boss: Enemy = null
 var _boss_spawned: bool = false
-## 墓主已被击杀 = 本关通关。用标记而不是在 died 回调里立刻 _finish：
-## 回调还压在 Enemy.take_damage 的调用栈里（queue_free 尚未完成），
-## 当场切状态容易读到已释放节点；下一帧由 _physics_process 统一收尾更稳。
+## 墓主已被击杀。通关需要「击杀墓主」与「存活到时间结束」两个条件同时成立，
+## 所以这个标记只代表达成了一半：提前打倒也得继续守到时间结束。
+## 用标记而不是在 died 回调里立刻 _finish：回调还压在 Enemy.take_damage 的
+## 调用栈里（queue_free 尚未完成），当场切状态容易读到已释放节点。
 var _boss_defeated: bool = false
 ## 关卡时间走完、墓主却还活着：不限时决战。此时压低杂兵上限，
 ## 让玩家能把自动瞄准的火力集中到墓主身上，而不是永远被小怪挡枪。
+## 墓主已死后即使时间走完也不算决战 —— 那一步直接通关。
 var _in_showdown: bool = false
 
 ## 当前关卡；生存模式下为 null，所有分支都用它区分两种玩法。
@@ -419,15 +421,18 @@ func _physics_process(delta: float) -> void:
 	if _state != State.PLAYING or not is_instance_valid(player):
 		return
 	_elapsed += delta
-	# 通关判定放在最前：打倒墓主的下一帧就收尾，不会在胜利瞬间又刷一批新怪、
-	# 又结算一次接触伤害。
-	# 注意通关条件已经不是「熬满 duration」——时间到而墓主还活着会进入决战，
-	# 一直到把它打倒为止；提前打倒则直接通关。
-	if _level != null and _boss_defeated:
+	# 通关判定放在最前：两个条件同时满足的那一帧就收尾，不会在胜利瞬间又刷
+	# 一批新怪、又结算一次接触伤害。
+	# 通关 = 击败墓主「并且」存活到关卡时间结束，缺一不可：
+	#   · 提前打倒墓主 → 不算通关，继续守到时间走完；
+	#   · 时间走完墓主还在 → 进不限时决战，打倒它才通关。
+	if _level != null and _boss_defeated and _elapsed >= _level.duration:
 		_finish(true)
 		return
 	var was_showdown: bool = _in_showdown
-	_in_showdown = _level != null and _elapsed >= _level.duration
+	# 决战只在「时间到 + 墓主还活着」时成立。墓主已死后即使时间到，
+	# 上面那条已经通关，不会再进这里。
+	_in_showdown = _level != null and _elapsed >= _level.duration and not _boss_defeated
 	if _in_showdown and not was_showdown:
 		# 阶段切换立刻刷新 HUD，不等 0.15 秒的常规刷新节奏 —— 否则玩家会看到
 		# 「时间归零、目标却还写着倒计时」的一瞬，以为卡住了。
@@ -1150,7 +1155,15 @@ func _on_enemy_died(enemy: Enemy) -> void:
 	if enemy == _boss:
 		_boss = null
 		_boss_defeated = true
-		_queue_toast("%s 伏诛！墓室出口打开了" % (_level.boss_name if _level != null else "墓主"))
+		# 打倒墓主只完成一半：还得活到时间结束才通关。提示必须讲清，
+		# 否则玩家会停在原地等结算，结果被继续刷出的杂兵围死。
+		var boss_label: String = _level.boss_name if _level != null else "墓主"
+		var left: float = maxf(0.0, _level.duration - _elapsed) if _level != null else 0.0
+		if left > 0.01:
+			_queue_toast("%s 伏诛！还需存活 %02d:%02d" % [
+				boss_label, int(left) / 60, int(left) % 60])
+		else:
+			_queue_toast("%s 伏诛！" % boss_label)
 	kills += 1
 	AudioManager.play("kill")
 	_spawn_burst(enemy.global_position, enemy.body_color, enemy.radius)
@@ -1319,7 +1332,8 @@ func _refresh_hud() -> void:
 	hud.elapsed = _elapsed
 	hud.enemy_count = enemies.size()
 	# 挑战模式下 HUD 顶部多一行关卡名与当前目标，生存模式传空值让 HUD 跳过绘制。
-	# 目标文案按四个阶段切换：等墓主 → 打墓主 → 超时决战 → 已击破。
+	# 目标文案按五个阶段切换：等墓主 → 打墓主 → 超时决战 → 已击破守时间 →（通关）。
+	# 通关要两件事都做到，所以击破墓主后仍要显示剩余存活时间。
 	if _level != null:
 		var remain: float = maxf(0.0, _level.duration - _elapsed)
 		var remain_text: String = "%02d:%02d" % [int(remain) / 60, int(remain) % 60]
@@ -1327,12 +1341,15 @@ func _refresh_hud() -> void:
 		hud.challenge_remaining = remain
 		hud.challenge_progress = clampf(_elapsed / maxf(1.0, _level.duration), 0.0, 1.0)
 		hud.arena_ratio = _arena_ratio
-		if _boss_defeated:
-			hud.challenge_objective = "墓主已除 · 出口开启"
+		if _boss_defeated and remain > 0.01:
+			# 墓主已倒但时间没走完：还得守住剩下的时间。
+			hud.challenge_objective = "墓主已除 · 存活 %s 后通关" % remain_text
+		elif _boss_defeated:
+			hud.challenge_objective = "目标达成 · 即将通关"
 		elif _in_showdown:
 			hud.challenge_objective = "决战 · 击败墓主才能离开"
 		elif _boss != null and is_instance_valid(_boss):
-			hud.challenge_objective = "击败 %s 才能通关   %s" % [_level.boss_name, remain_text]
+			hud.challenge_objective = "击败 %s 且存活 %s" % [_level.boss_name, remain_text]
 		else:
 			hud.challenge_objective = "墓主苏醒倒计时 %s" % remain_text
 	else:

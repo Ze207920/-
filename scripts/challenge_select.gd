@@ -240,7 +240,7 @@ func _draw_detail(data: Dictionary) -> void:
 			"难度 %s  %s" % [ChallengeData.tier_name(int(level.tier)), level.star_text()], 12,
 			ChallengeData.tier_color(int(level.tier)), HORIZONTAL_ALIGNMENT_RIGHT, 156.0)
 	# 每关的墓主名字直接读关卡数据，玩家进关前就知道最后要打倒谁。
-	var note: String = "\n墓室随时间收缩、碎石挡路；最后 30 秒「%s」苏醒，击败它才能通关。" % level.boss_name
+	var note: String = "\n墓室随时间收缩、碎石挡路；最后 30 秒「%s」苏醒，击败它并活到时间结束才通关。" % level.boss_name
 	UiStyle.draw_paragraph(self, rect.position + Vector2(20.0, 52.0),
 			level.blurb + note, 12,
 			Color(0.78, 0.83, 0.90), width - 40.0, 3)

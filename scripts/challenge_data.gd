@@ -52,9 +52,10 @@ const BOSS_COLORS: Array[Color] = [
 ## 选关界面底部的关卡特性说明，一句话讲清「这关和别关差在哪」。
 @export var blurb: String = ""
 @export var tier: Tier = Tier.EASY
-## 关卡时间轴长度。现在只负责「难度曲线走到哪儿、场地收缩到哪儿、墓主何时苏醒」，
-## 不再是通关条件 —— 真正的通关条件是击败本关墓主（见 Game._physics_process）。
-## 时间走完而墓主还活着，则进入不限时的决战，直到把它打倒。
+## 关卡时间轴长度。通关要同时满足「击败本关墓主」与「存活到这个时间结束」，
+## 二者缺一不可（见 Game._physics_process）。它还决定难度曲线走到哪儿、
+## 场地收缩到哪儿、墓主何时苏醒。时间走完而墓主还活着 → 不限时决战，
+## 一直打到墓主倒下为止；墓主提前倒下 → 继续守到时间结束。
 @export var duration: float = 60.0
 
 ## 以下六条曲线的起止值：x = 开局，y = 结束。
@@ -153,9 +154,9 @@ func curve_at(elapsed: float) -> PackedFloat32Array:
 
 
 func objective_text() -> String:
-	# 通关目标已经从「熬满时间」换成「打倒墓主」，卡片上必须写清楚，
-	# 否则玩家会一直以为倒计时归零就赢了。时长仍然标出来，作为节奏参考。
-	return "击败墓主 · %d秒" % int(duration)
+	# 通关要两件事都做到：打倒墓主 + 活到时间结束。卡片上必须写清楚，
+	# 否则玩家会以为只做其中一件就赢了。
+	return "击败墓主并存活 · %d秒" % int(duration)
 
 
 ## 用实心/空心星表示档位，比纯文字标签更容易一眼扫过去。
@@ -254,7 +255,7 @@ static func _build() -> void:
 	_apply_boss_balance()
 
 
-## 收窄场地之后的难度补偿 + 整体提难（第二次上调）。
+## 收窄场地之后的难度补偿 + 整体提难（第三次上调）。
 ##
 ## 原来的数值是给无限地图配的：邪物追不上玩家就永远追不上，只要一直跑就很难
 ## 被围住。改成封闭墓室之后，同屏的怪不需要「跑得比玩家快」也能合围，
@@ -262,20 +263,20 @@ static func _build() -> void:
 ##
 ## 提难时刻意只动「统一补偿系数」，不逐关改八组数字：关卡之间的递进曲线
 ## 形状完全保留，整条曲线只是平稳上抬一档，不会把某一关单独抬成断崖。
-## 相对上一版（0.90 / 1.03 / 0.96 / 1.08 / 1.06），这一版：
-##   同屏上限 ×0.95（+6%）、刷怪间隔 ×0.99（快 4%）、晚期移速 ×0.98（+2%）、
-##   血量 ×1.13、接触伤害 ×1.09。
-## 数值只小幅抬：这一版新加了「墓室持续收缩」和「必须打倒墓主」，
-## 两者都是实打实的难度增量，杂兵再猛抬就会把决战阶段压成无解。
+## 相对上一版（0.95 / 0.99 / 0.98 / 1.13 / 1.09），这一版：
+##   同屏上限 ×1.00（+5%）、刷怪间隔 ×0.96（快 4%）、晚期移速 ×0.97（+3%）、
+##   血量 ×1.18、接触伤害 ×1.13。
+## 这一版通关条件又严了一档（击破墓主后还得活到时间结束），所以杂兵只小幅抬，
+## 重量放在 boss 数值上（见 _apply_boss_balance），避免把决战压成无解。
 ## 每批数量上限仍 −1：最后 30 秒还有大 boss 压场，再放开批量刷怪会直接糊屏。
 ##
 ## 场地尺寸与收缩终点也在这里定：用插值而不是逐关写死，改关卡总数时不用重调八个数字。
 static func _apply_arena_balance() -> void:
-	const CAP_SCALE: float = 0.95
-	const INTERVAL_SCALE: float = 0.99
-	const SPEED_SCALE: float = 0.98
-	const HP_SCALE: float = 1.13
-	const DAMAGE_SCALE: float = 1.09
+	const CAP_SCALE: float = 1.00
+	const INTERVAL_SCALE: float = 0.96
+	const SPEED_SCALE: float = 0.97
+	const HP_SCALE: float = 1.18
+	const DAMAGE_SCALE: float = 1.13
 	for i in _levels.size():
 		var level: ChallengeData = _levels[i]
 		level.cap_span *= CAP_SCALE
@@ -300,9 +301,14 @@ static func _apply_arena_balance() -> void:
 ## 一直被跟着，给新手留出「原来会被追」的印象），终章 198（比玩家快一点，
 ## 必须靠走位绕碎石、突进技能或清出一条路）。八关平滑过渡，不会突然无解。
 ##
-## 血量沿用「厚」的设定：墓主现在就是通关目标，玩家必须在杂兵环绕里把火力
+## 血量沿用「厚」的设定：墓主是通关的一半条件，玩家必须在杂兵环绕里把火力
 ## 集中到它身上。时间走完还没打倒就进入决战、不再计时，所以不需要在
 ## 30 秒窗口内勉强凑够伤害 —— 打得慢只是多熬一会儿，不会直接判负。
+## 但打倒后还得守到时间结束，所以血量不能厚到「打完时早就超时」，否则通关
+## 全程变成决战、失去节奏；这一版血量上调约 30%，但仍在可击杀区间内。
+##
+## 速度：玩家基准速度 190。第一关 178（追得上但跑得掉），终章 204（比玩家快，
+## 必须靠走位/突进/清路）。伤害、技能伤害与频率同步上调，后期墓主真的能杀人。
 ##
 ## 技能按三档递进：前两关只会突进（教会玩家「它会突然加速」），
 ## 3~5 关加一圈墓气震荡（必须开始躲技能），6~8 关冷却更短、伤害更高。
@@ -312,14 +318,14 @@ static func _apply_boss_balance() -> void:
 		var t: float = float(i) / float(maxi(1, _levels.size() - 1))
 		level.boss_name = BOSS_NAMES[clampi(i, 0, BOSS_NAMES.size() - 1)]
 		level.boss_color = BOSS_COLORS[clampi(i, 0, BOSS_COLORS.size() - 1)]
-		level.boss_health = lerpf(220.0, 1100.0, t)
-		level.boss_speed = lerpf(172.0, 198.0, t)
-		level.boss_damage = lerpf(14.0, 26.0, t)
-		level.boss_radius = lerpf(34.0, 46.0, t)
+		level.boss_health = lerpf(280.0, 1420.0, t)
+		level.boss_speed = lerpf(178.0, 204.0, t)
+		level.boss_damage = lerpf(17.0, 32.0, t)
+		level.boss_radius = lerpf(36.0, 48.0, t)
 		level.boss_skill_level = 1 if i < 2 else (2 if i < 5 else 3)
-		level.boss_skill_interval = lerpf(7.2, 4.2, t)
-		level.boss_skill_damage = lerpf(8.0, 15.0, t)
-		level.boss_skill_radius = lerpf(170.0, 230.0, t)
+		level.boss_skill_interval = lerpf(6.4, 3.6, t)
+		level.boss_skill_damage = lerpf(11.0, 21.0, t)
+		level.boss_skill_radius = lerpf(185.0, 250.0, t)
 
 
 static func _make(id: String, display_name: String, subtitle: String, tier: Tier,
