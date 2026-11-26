@@ -44,6 +44,11 @@ var toast_time: float = 0.0
 ## 挑战关最后 30 秒的墓主：名字 + 剩余血量比例（负数表示不在场）。
 var boss_name: String = ""
 var boss_ratio: float = -1.0
+## 地狱模式专属：八位墓主的击杀进度与当前同屏数量。
+var hell_mode: bool = false
+var boss_total: int = 0
+var boss_defeated: int = 0
+var boss_alive: int = 0
 
 var _hurt_flash: float = 0.0
 var _pulse: float = 0.0
@@ -158,14 +163,34 @@ func _draw_challenge(view: Vector2) -> void:
 				"墓室 %d%%" % int(round(arena_ratio * 100.0)), 11,
 				Color(1.0, 0.52, 0.36), HORIZONTAL_ALIGNMENT_LEFT, 90.0)
 
+	# 地狱模式在目标行下面画一排墓主进度点：实心 = 已伏诛，空心 = 仍在场。
+	# 八个小圆点比「3/8」更直观，玩家余光就能确认还差几只。
+	var label_y: float = 94.0
+	var bar_y: float = 98.0
+	if hell_mode and boss_total > 0:
+		var dot_y: float = 88.0
+		var dot_gap: float = 18.0
+		var start_x: float = view.x * 0.5 - float(boss_total - 1) * dot_gap * 0.5
+		for i in boss_total:
+			var dot_color: Color = UiStyle.HP if i < boss_defeated else Color(0.24, 0.28, 0.34)
+			draw_circle(Vector2(start_x + float(i) * dot_gap, dot_y), 4.0, dot_color)
+			draw_arc(Vector2(start_x + float(i) * dot_gap, dot_y), 4.0, 0.0, TAU, 12,
+					Color(0.05, 0.06, 0.09, 0.85), 1.0, true)
+		label_y = 108.0
+		bar_y = 112.0
+
 	# 墓主登场后多一行红色警示 + 血条，和上面的蓝色时间轴分开，
 	# 玩家扫一眼就能分清「现在该干嘛」和「这东西还剩多少血」。
 	if boss_name != "":
 		var boss_fill: float = clampf(boss_ratio, 0.0, 1.0)
-		UiStyle.draw_label(self, Vector2(view.x * 0.5 - 170.0, 94.0),
-				"%s   %d%%    击败它才能通关" % [boss_name, int(boss_fill * 100.0)], 12,
-				UiStyle.HP, HORIZONTAL_ALIGNMENT_CENTER, 340.0)
-		var boss_bar := Rect2(view.x * 0.5 - 120.0, 98.0, 240.0, 4.0)
+		var boss_text: String = "%s   %d%%    击败它才能通关" % [
+			boss_name, int(boss_fill * 100.0)]
+		if hell_mode:
+			boss_text = "%s   %d%%    ·  在场 %d · 已斩 %d" % [
+				boss_name, int(boss_fill * 100.0), boss_alive, boss_defeated]
+		UiStyle.draw_label(self, Vector2(view.x * 0.5 - 170.0, label_y),
+				boss_text, 12, UiStyle.HP, HORIZONTAL_ALIGNMENT_CENTER, 340.0)
+		var boss_bar := Rect2(view.x * 0.5 - 120.0, bar_y, 240.0, 4.0)
 		draw_rect(boss_bar, Color(0.13, 0.17, 0.23, 0.92))
 		if boss_fill > 0.0:
 			draw_rect(Rect2(boss_bar.position, Vector2(boss_bar.size.x * boss_fill, boss_bar.size.y)),

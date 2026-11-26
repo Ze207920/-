@@ -107,6 +107,14 @@ const ARENA_SHRINK_START: float = 0.08
 @export var boss_skill_radius: float = 190.0
 
 static var _levels: Array[ChallengeData] = []
+static var _hell: ChallengeData = null
+
+## 地狱模式的墓主登场时刻。八关墓主全部登场：开局一位，此后每 30 秒一位，
+## 最后 30 秒剩余三位一起苏醒 —— 否则 3 分钟只够刷六位，凑不齐八关墓主。
+## 时间到而墓主未全部伏诛时进入不限时决战，不会在最后一秒强行判负。
+const HELL_BOSS_TIMES: Array[float] = [
+	0.0, 30.0, 60.0, 90.0, 120.0, 150.0, 150.0, 150.0,
+]
 
 
 ## 全部关卡，按难度从低到高排列。首次调用时构建。
@@ -118,6 +126,24 @@ static func levels() -> Array[ChallengeData]:
 
 static func count() -> int:
 	return levels().size()
+
+
+## 地狱模式：独立的一张 3 分钟数据表，不进 levels() 的八关列表，
+## 所以选关界面、解锁进度、下一关逻辑都不会被它污染。
+## 数值在终章之上再抬一档：血量、密度、伤害、收缩全都更狠；
+## 场地比终章还窄，碎石更密，给八位墓主留出的走位空间极小。
+static func hell() -> ChallengeData:
+	if _hell == null:
+		_hell = _make(
+				"hell", "地狱模式", "终局 · 八墓主", Tier.NIGHTMARE, 180.0,
+				Vector2(1.55, 8.60), Vector2(1.22, 2.72), Vector2(0.68, 0.12),
+				Vector2(58.0, 186.0), Vector2(2.0, 6.0), Vector2(1.22, 2.00),
+				[["zombie", 0.0], ["snake", 0.0], ["ape", 8.0], ["beetle", 18.0]], 0.74,
+				"三分钟，八位墓主轮番苏醒。杂兵不停，场地持续收缩，活到最后才算赢。",
+				2.2, 3, 52.0, 15.0, 24)
+		_hell.arena_size = Vector2(1760.0, 1220.0)
+		_hell.arena_final_scale = 0.62
+	return _hell
 
 
 ## 取第 index 关，越界时钳到最后一关 —— 选关界面和存档都可能给出脏数据。

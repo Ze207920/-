@@ -9,6 +9,8 @@ const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
 const PORT = Number(process.env.CDP_PORT || 9333);
 const PAGE_URL = process.env.PAGE_URL || 'http://127.0.0.1:8123/index.html';
 const OUT_DIR = process.env.OUT_DIR || 'art/preview';
+// 默认从标题页开生存模式；设 START_KEY=KeyH 可验证地狱模式入口。
+const START_KEY = process.env.START_KEY || 'Space';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -140,7 +142,8 @@ async function main() {
     await sleep(4000);
     await shot('web_title.png');
 
-    await key('Space', 32, ' ');
+    if (START_KEY === 'KeyH') await key('KeyH', 72, 'h');
+    else await key('Space', 32, ' ');
     await sleep(1200);
     await key('KeyW', 87, 'w');
     await sleep(2500);

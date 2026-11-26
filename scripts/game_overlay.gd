@@ -10,6 +10,7 @@ signal resume_requested
 signal restart_requested
 signal title_requested
 signal challenge_requested
+signal hell_requested
 signal characters_requested
 signal next_requested
 signal select_requested
@@ -143,6 +144,7 @@ func show_title(best: Dictionary = {}, progress: Dictionary = {},
 		"生存模式    无尽，熬到倒下为止",
 		"挑战模式    八关递进，墓室随时间收缩",
 		"每关最后 30 秒    墓主苏醒，击败它并活到时间结束才通关",
+		"地狱模式    3 分钟 · 八位墓主轮番苏醒 · 全灭并活到最后",
 	]
 	# 当前角色放在最显眼的位置：玩家进标题页第一件想确认的事就是"我在用谁"。
 	var character_name: String = String(character.get("name", ""))
@@ -160,16 +162,19 @@ func show_title(best: Dictionary = {}, progress: Dictionary = {},
 	var cleared: int = int(progress.get("cleared", 0))
 	if cleared > 0:
 		lines.append("挑战进度  %d / %d 关" % [cleared, int(progress.get("total", 0))])
+	if bool(progress.get("hell", false)):
+		lines.append("地狱模式  已征服")
 	_body.text = "\n".join(lines)
 	_set_buttons([
 		{"text": "生存模式", "action": "start"},
 		{"text": "挑战模式", "action": "challenge"},
+		{"text": "地狱模式", "action": "hell"},
 		{"text": "选择角色", "action": "characters"},
 	])
 	if is_touch_device():
 		_hint.text = "点击按钮开始 · 左下拖动移动 · 右下角暂停与技能"
 	else:
-		_hint.text = "空格 开始生存模式    C 挑战模式    Tab 换角色    M 静音"
+		_hint.text = "空格 生存    C 挑战    H 地狱    Tab 换角色    M 静音"
 	visible = true
 	_focus_first()
 
@@ -205,6 +210,7 @@ func show_over(stats: Dictionary) -> void:
 	_mode = Mode.OVER
 	var cleared: bool = bool(stats.get("cleared", false))
 	var challenge: bool = bool(stats.get("challenge", false))
+	var hell: bool = bool(stats.get("hell", false))
 	var has_next: bool = bool(stats.get("has_next", false))
 
 	if cleared:
@@ -215,7 +221,13 @@ func show_over(stats: Dictionary) -> void:
 		_subtitle.text = "GAME OVER"
 
 	var lines: Array[String] = []
-	if challenge:
+	if hell:
+		lines.append("地狱模式    八位墓主")
+		lines.append("目标    击败全部墓主并存活到 03:00")
+		lines.append("战果    斩墓主 %d / %d" % [
+			int(stats.get("boss_defeated", 0)), int(stats.get("boss_total", 0))])
+		lines.append("")
+	elif challenge:
 		lines.append("第 %d 关    %s" % [
 			int(stats.get("level_index", 0)) + 1, String(stats.get("level_name", ""))])
 		lines.append("目标    击败本关墓主并存活到时间结束")
@@ -223,7 +235,7 @@ func show_over(stats: Dictionary) -> void:
 	lines.append("存活 %s" % String(stats.get("time_text", "00:00")))
 	lines.append("等级 %d    击杀 %d" % [
 		int(stats.get("level", 1)), int(stats.get("kills", 0))])
-	if not challenge:
+	if not challenge and not hell:
 		lines.append("武器 %s" % String(stats.get("weapon_text", "—")))
 	_body.text = "\n".join(lines)
 
@@ -240,7 +252,11 @@ func show_over(stats: Dictionary) -> void:
 	if cleared and has_next:
 		buttons.append({"text": "下一关", "action": "next"})
 	buttons.append({"text": "再来一局", "action": "restart"})
-	if challenge:
+	if hell:
+		# 地狱模式没有「下一关」，最后一颗按钮必须是返回主菜单，ESC 才不会
+		# 意外跑回挑战选关。
+		buttons.append({"text": "返回主菜单", "action": "title"})
+	elif challenge:
 		# 「返回主菜单」放在「返回选关」之前：_set_buttons 把最后一个按钮设为
 		# ESC 的 secondary action，这样 ESC 仍回到选关，保持原来的操作习惯。
 		buttons.append({"text": "返回主菜单", "action": "title"})
@@ -359,6 +375,8 @@ func _emit_action(action: String) -> void:
 			title_requested.emit()
 		"challenge":
 			challenge_requested.emit()
+		"hell":
+			hell_requested.emit()
 		"characters":
 			characters_requested.emit()
 		"next":
@@ -388,6 +406,9 @@ func _input(event: InputEvent) -> void:
 			elif key.keycode == KEY_C:
 				get_viewport().set_input_as_handled()
 				challenge_requested.emit()
+			elif key.keycode == KEY_H:
+				get_viewport().set_input_as_handled()
+				hell_requested.emit()
 			elif key.keycode == KEY_TAB:
 				get_viewport().set_input_as_handled()
 				characters_requested.emit()

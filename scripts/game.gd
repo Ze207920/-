@@ -135,9 +135,11 @@ enum State {
 }
 
 ## 玩法模式。挑战模式在生存模式之上叠一层「关卡目标」：活到指定秒数即通关。
+## 地狱模式是独立的一局：3 分钟、八位墓主、通关要全部击破并活到时间结束。
 enum Mode {
 	ENDLESS,
 	CHALLENGE,
+	HELL,
 }
 
 ## 当前模式与关卡索引。用静态变量而不是场景字段，是因为重开一局走的是
@@ -253,6 +255,13 @@ var _boss_defeated: bool = false
 ## 墓主已死后即使时间走完也不算决战 —— 那一步直接通关。
 var _in_showdown: bool = false
 
+## 地狱模式的八位墓主。和单只墓主分开记：这里同时可能有多只在场，
+## 通关必须等 _bosses 清空且时间走完；_boss 只指向其中一只用于 HUD 血条。
+var _bosses: Array[Enemy] = []
+var _bosses_defeated: int = 0
+var _boss_spawn_index: int = 0
+var _boss_total: int = 0
+
 ## 当前关卡；生存模式下为 null，所有分支都用它区分两种玩法。
 var _level: ChallengeData = null
 ## 刷怪落点翻到玩家前进方向的概率，挑战模式下由关卡决定。
@@ -284,7 +293,13 @@ var _walls: ArenaWalls = null
 
 func _ready() -> void:
 	# 先按静态变量还原本局是哪种玩法：_spawn_player 之后的所有逻辑都依赖它。
-	_level = ChallengeData.at(challenge_index) if mode == Mode.CHALLENGE else null
+	if mode == Mode.CHALLENGE:
+		_level = ChallengeData.at(challenge_index)
+	elif mode == Mode.HELL:
+		_level = ChallengeData.hell()
+		_boss_total = ChallengeData.HELL_BOSS_TIMES.size()
+	else:
+		_level = null
 	_front_bias = _level.front_bias if _level != null else 0.55
 
 	# 场地必须最先定下来：底面尺寸、相机限制、玩家夹制、刷怪落点全都依赖它。
@@ -426,18 +441,23 @@ func _physics_process(delta: float) -> void:
 	# 通关 = 击败墓主「并且」存活到关卡时间结束，缺一不可：
 	#   · 提前打倒墓主 → 不算通关，继续守到时间走完；
 	#   · 时间走完墓主还在 → 进不限时决战，打倒它才通关。
-	if _level != null and _boss_defeated and _elapsed >= _level.duration:
+	# 地狱模式把「墓主」换成八位：全部伏诛且时间走完才算通关。
+	var bosses_cleared: bool = _bosses_defeated >= maxi(1, _boss_total) if _is_hell() else _boss_defeated
+	if _level != null and bosses_cleared and _elapsed >= _level.duration:
 		_finish(true)
 		return
 	var was_showdown: bool = _in_showdown
 	# 决战只在「时间到 + 墓主还活着」时成立。墓主已死后即使时间到，
 	# 上面那条已经通关，不会再进这里。
-	_in_showdown = _level != null and _elapsed >= _level.duration and not _boss_defeated
+	_in_showdown = _level != null and _elapsed >= _level.duration and not bosses_cleared
 	if _in_showdown and not was_showdown:
 		# 阶段切换立刻刷新 HUD，不等 0.15 秒的常规刷新节奏 —— 否则玩家会看到
 		# 「时间归零、目标却还写着倒计时」的一瞬，以为卡住了。
 		_refresh_hud()
-		_queue_toast("时间到！墓主未除，击败它才能离开")
+		if _is_hell():
+			_queue_toast("时间到！还剩 %d 位墓主，全灭才能离开" % (_boss_total - _bosses_defeated))
+		else:
+			_queue_toast("时间到！墓主未除，击败它才能离开")
 	_tick_arena_shrink(delta)
 	_tick_boss()
 	_tick_spawning(delta)
@@ -485,7 +505,15 @@ func _challenge_progress() -> Dictionary:
 	for level: ChallengeData in ChallengeData.levels():
 		if Records.challenge_cleared(level.id):
 			cleared += 1
-	return {"cleared": cleared, "total": ChallengeData.count()}
+	return {
+		"cleared": cleared,
+		"total": ChallengeData.count(),
+		"hell": Records.challenge_cleared("hell"),
+	}
+
+
+func _is_hell() -> bool:
+	return mode == Mode.HELL
 
 
 func _enter_play() -> void:
@@ -658,9 +686,11 @@ func _finish(cleared: bool) -> void:
 	var best_time: float = _elapsed
 	var has_next: bool = false
 	if _level != null:
-		is_record = Records.submit_challenge(_level.id, cleared, _elapsed, kills)
-		best_time = maxf(float(Records.challenge_record(_level.id)["time"]), _elapsed)
-		has_next = cleared and challenge_index + 1 < ChallengeData.count()
+		# 地狱模式单独占一条记录，不混进八关解锁表。
+		var record_id: String = "hell" if _is_hell() else _level.id
+		is_record = Records.submit_challenge(record_id, cleared, _elapsed, kills)
+		best_time = maxf(float(Records.challenge_record(record_id)["time"]), _elapsed)
+		has_next = (not _is_hell()) and cleared and challenge_index + 1 < ChallengeData.count()
 	else:
 		var previous: Dictionary = Records.load_best()
 		is_record = Records.submit(_elapsed, kills, player.level)
@@ -675,6 +705,9 @@ func _finish(cleared: bool) -> void:
 		"best_time": best_time,
 		"cleared": cleared,
 		"challenge": _level != null,
+		"hell": _is_hell(),
+		"boss_defeated": _bosses_defeated,
+		"boss_total": _boss_total,
 		"level_index": challenge_index,
 		"level_name": _level.display_name if _level != null else "",
 		"has_next": has_next,
@@ -698,7 +731,18 @@ func _restart() -> void:
 
 func _back_to_title() -> void:
 	auto_start = false
+	open_select_on_load = false
 	mode = Mode.ENDLESS
+	challenge_index = 0
+	get_tree().paused = false
+	get_tree().call_deferred("reload_current_scene")
+
+
+## 标题页的「地狱模式」。重载一局，保证八位墓主的计数、场地、障碍全部从零开始。
+func _start_hell() -> void:
+	auto_start = true
+	open_select_on_load = false
+	mode = Mode.HELL
 	challenge_index = 0
 	get_tree().paused = false
 	get_tree().call_deferred("reload_current_scene")
@@ -708,6 +752,7 @@ func _back_to_title() -> void:
 func _back_to_select() -> void:
 	auto_start = false
 	open_select_on_load = true
+	mode = Mode.CHALLENGE
 	challenge_index = 0
 	get_tree().paused = false
 	get_tree().call_deferred("reload_current_scene")
@@ -800,33 +845,59 @@ func _on_boss_shockwave(origin: Vector2, radius: float, damage: float) -> void:
 	AudioManager.play("hit")
 
 
-## 挑战关最后 BOSS_WINDOW 秒放出该关墓主，一局只放一次。
+## 挑战关最后 BOSS_WINDOW 秒放出该关墓主，一局只放一次；
+## 地狱模式改走 _tick_hell_bosses()，按时间表连放八位。
 ## 放在刷怪之前：到点那一帧不会先丢一批杂兵、再让 boss 从怪堆里挤出来。
 func _tick_boss() -> void:
+	if _is_hell():
+		_tick_hell_bosses()
+		return
 	if _level == null or _boss_spawned:
 		return
 	if _level.duration - _elapsed > ChallengeData.BOSS_WINDOW:
 		return
 	_boss_spawned = true
 	var preset: EnemyData = EnemyData.boss_for(_level)
+	_boss = _make_boss(preset)
+	_queue_toast("%s 苏醒！击败它才能离开墓室" % _level.boss_name)
+	AudioManager.play("levelup")
+	# 血条和目标文案在墓主登场这一帧就该出现，不等下一次 HUD 轮询。
+	_refresh_hud()
+
+
+## 地狱模式：开局第一位，之后每 30 秒一位，最后 30 秒剩余三位一起苏醒。
+## 用 while 而不是 if：若某一帧因升级面板卡顿跨过了多个时间点，
+## 后续墓主仍要补上，否则「击败所有墓主」的计数永远凑不齐。
+func _tick_hell_bosses() -> void:
+	var times: Array[float] = ChallengeData.HELL_BOSS_TIMES
+	while _boss_spawn_index < times.size() and _elapsed >= times[_boss_spawn_index]:
+		var index: int = _boss_spawn_index
+		_boss_spawn_index += 1
+		var preset: EnemyData = EnemyData.boss_for_hell(index)
+		var boss: Enemy = _make_boss(preset, index)
+		_bosses.append(boss)
+		_boss = boss
+		_queue_toast("%s 苏醒！墓主 %d/%d" % [
+			preset.display_name, _boss_spawn_index, maxi(1, _boss_total)])
+		AudioManager.play("levelup")
+		_refresh_hud()
+
+
+## 生成一只墓主。种类、目标、位置都要在 add_child 之前写好 ——
+## _ready() 会按 radius 建碰撞体，位置晚了就会有一帧停在原点被判成贴身。
+func _make_boss(preset: EnemyData, spawn_prefer: int = -1) -> Enemy:
 	var boss := Enemy.new()
-	# 和 _spawn_one 一个规矩：种类、目标、位置都要在 add_child 之前写好。
-	# _ready() 会按 radius 建碰撞体，位置晚了就会有一帧停在原点被判成贴身。
 	boss.apply_data(preset)
 	boss.setup(player, 1.0, 1.0, 1.0)
 	boss.arena_rect = _arena
-	var point: Vector2 = _boss_spawn_point(boss.radius)
+	var point: Vector2 = _boss_spawn_point(boss.radius, spawn_prefer)
 	boss.position = point
 	add_child(boss)
 	boss.global_position = point
 	boss.died.connect(_on_enemy_died)
 	boss.boss_shockwave.connect(_on_boss_shockwave)
 	enemies.append(boss)
-	_boss = boss
-	_queue_toast("%s 苏醒！击败它才能离开墓室" % _level.boss_name)
-	AudioManager.play("levelup")
-	# 血条和目标文案在墓主登场这一帧就该出现，不等下一次 HUD 轮询。
-	_refresh_hud()
+	return boss
 
 
 ## 墓主从「视野边缘再远一点」的场地边入场：约 640 像素，两三秒就能压到脸上。
@@ -837,7 +908,7 @@ func _tick_boss() -> void:
 const BOSS_SPAWN_DISTANCE: float = 640.0
 const BOSS_MIN_DISTANCE: float = 420.0
 
-func _boss_spawn_point(radius: float) -> Vector2:
+func _boss_spawn_point(radius: float, prefer_index: int = -1) -> Vector2:
 	var inner: Rect2 = _arena.grow(-radius - 8.0)
 	if inner.size.x <= 0.0 or inner.size.y <= 0.0 or not is_instance_valid(player):
 		return _arena.get_center()
@@ -852,6 +923,11 @@ func _boss_spawn_point(radius: float) -> Vector2:
 		Vector2(inner.position.x, center.y),
 		Vector2(inner.end.x, center.y),
 	]
+	# 地狱模式最后三只同时苏醒：按序号占不同入口，避免三只叠成一坨。
+	if prefer_index >= 0:
+		var preferred: Vector2 = candidates[prefer_index % candidates.size()]
+		if preferred.distance_to(player.global_position) >= BOSS_MIN_DISTANCE:
+			return preferred
 	var best: Vector2 = candidates[0]
 	var best_score: float = -1.0e9
 	var farthest: Vector2 = candidates[0]
@@ -903,7 +979,8 @@ func _tick_recycle(delta: float) -> void:
 		if not is_instance_valid(enemy) or enemy.is_queued_for_deletion():
 			continue
 		# 墓主全程贴着玩家跑，绝不能被「远处回收」瞬移走，否则追击会一跳一跳。
-		if enemy == _boss:
+		# 地狱模式同时有多只，按 is_boss 判断而不是只比对 _boss。
+		if enemy.is_boss:
 			continue
 		if enemy.global_position.distance_squared_to(player.global_position) <= limit:
 			continue
@@ -1150,13 +1227,29 @@ func _prune_gems() -> void:
 
 func _on_enemy_died(enemy: Enemy) -> void:
 	enemies.erase(enemy)
-	# 打倒墓主 = 完成本关。仍然按普通击杀结算宝石与特效，只是不补刷第二只。
+	# 打倒墓主只完成一半：还得活到时间结束才通关。提示必须讲清，
+	# 否则玩家会停在原地等结算，结果被继续刷出的杂兵围死。
 	# 真正切到结算页由 _physics_process 在下一帧做。
-	if enemy == _boss:
+	if _is_hell() and enemy.is_boss:
+		_bosses.erase(enemy)
+		_bosses_defeated += 1
+		if _boss == enemy:
+			_boss = _bosses.back() if not _bosses.is_empty() else null
+		var boss_label: String = enemy.data.display_name if enemy.data != null else "墓主"
+		var left: float = maxf(0.0, _level.duration - _elapsed) if _level != null else 0.0
+		if _bosses_defeated >= _boss_total:
+			if left > 0.01:
+				_queue_toast("八位墓主全灭！还需存活 %02d:%02d" % [
+					int(left) / 60, int(left) % 60])
+			else:
+				_queue_toast("八位墓主全灭！")
+		else:
+			_queue_toast("%s 伏诛！还剩 %d 位墓主" % [
+				boss_label, _boss_total - _bosses_defeated])
+		_refresh_hud()
+	elif enemy == _boss:
 		_boss = null
 		_boss_defeated = true
-		# 打倒墓主只完成一半：还得活到时间结束才通关。提示必须讲清，
-		# 否则玩家会停在原地等结算，结果被继续刷出的杂兵围死。
 		var boss_label: String = _level.boss_name if _level != null else "墓主"
 		var left: float = maxf(0.0, _level.duration - _elapsed) if _level != null else 0.0
 		if left > 0.01:
@@ -1253,6 +1346,7 @@ func _build_ui() -> void:
 	overlay.restart_requested.connect(_restart)
 	overlay.title_requested.connect(_back_to_title)
 	overlay.challenge_requested.connect(_open_challenge_select)
+	overlay.hell_requested.connect(_start_hell)
 	overlay.characters_requested.connect(_open_character_select)
 	overlay.next_requested.connect(_next_challenge)
 	overlay.select_requested.connect(_back_to_select)
@@ -1337,30 +1431,54 @@ func _refresh_hud() -> void:
 	if _level != null:
 		var remain: float = maxf(0.0, _level.duration - _elapsed)
 		var remain_text: String = "%02d:%02d" % [int(remain) / 60, int(remain) % 60]
-		hud.challenge_name = _level.display_name
 		hud.challenge_remaining = remain
 		hud.challenge_progress = clampf(_elapsed / maxf(1.0, _level.duration), 0.0, 1.0)
 		hud.arena_ratio = _arena_ratio
-		if _boss_defeated and remain > 0.01:
-			# 墓主已倒但时间没走完：还得守住剩下的时间。
-			hud.challenge_objective = "墓主已除 · 存活 %s 后通关" % remain_text
-		elif _boss_defeated:
-			hud.challenge_objective = "目标达成 · 即将通关"
-		elif _in_showdown:
-			hud.challenge_objective = "决战 · 击败墓主才能离开"
-		elif _boss != null and is_instance_valid(_boss):
-			hud.challenge_objective = "击败 %s 且存活 %s" % [_level.boss_name, remain_text]
+		if _is_hell():
+			hud.challenge_name = "地狱模式 · 八墓主"
+			hud.hell_mode = true
+			hud.boss_total = _boss_total
+			hud.boss_defeated = _bosses_defeated
+			hud.boss_alive = _bosses.size()
+			if _bosses_defeated >= _boss_total:
+				hud.challenge_objective = "全灭 · 存活 %s 后通关" % remain_text
+			elif _in_showdown:
+				hud.challenge_objective = "决战 · 还剩 %d 位墓主" % (_boss_total - _bosses_defeated)
+			else:
+				hud.challenge_objective = "击败墓主 %d/%d · 存活 %s" % [
+					_bosses_defeated, _boss_total, remain_text]
 		else:
-			hud.challenge_objective = "墓主苏醒倒计时 %s" % remain_text
+			hud.challenge_name = _level.display_name
+			hud.hell_mode = false
+			hud.boss_total = 0
+			hud.boss_defeated = 0
+			hud.boss_alive = 0
+			if _boss_defeated and remain > 0.01:
+				# 墓主已倒但时间没走完：还得守住剩下的时间。
+				hud.challenge_objective = "墓主已除 · 存活 %s 后通关" % remain_text
+			elif _boss_defeated:
+				hud.challenge_objective = "目标达成 · 即将通关"
+			elif _in_showdown:
+				hud.challenge_objective = "决战 · 击败墓主才能离开"
+			elif _boss != null and is_instance_valid(_boss):
+				hud.challenge_objective = "击败 %s 且存活 %s" % [_level.boss_name, remain_text]
+			else:
+				hud.challenge_objective = "墓主苏醒倒计时 %s" % remain_text
 	else:
 		hud.challenge_name = ""
 		hud.challenge_remaining = -1.0
 		hud.challenge_progress = -1.0
 		hud.challenge_objective = ""
 		hud.arena_ratio = 1.0
+		hud.hell_mode = false
+		hud.boss_total = 0
+		hud.boss_defeated = 0
+		hud.boss_alive = 0
 	# 墓主血条：从苏醒那一刻起一直显示到本关结束，玩家能判断该躲还是该硬拼。
+	# 地狱模式有多只同屏，_boss 指向最近出场的一只，旁边补上「在场 N」提示。
 	if _boss != null and is_instance_valid(_boss):
-		hud.boss_name = _level.boss_name if _level != null else "墓主"
+		hud.boss_name = _boss.data.display_name if (_is_hell() and _boss.data != null) \
+				else (_level.boss_name if _level != null else "墓主")
 		hud.boss_ratio = _boss.get_health_ratio()
 	else:
 		hud.boss_name = ""

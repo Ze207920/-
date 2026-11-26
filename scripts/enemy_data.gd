@@ -108,6 +108,28 @@ static func boss_for(level: ChallengeData) -> EnemyData:
 	return data
 
 
+## 地狱模式专用：把八关墓主逐一搬过来，并在原数值上再强化一轮。
+## 强化幅度随出场顺序递增，最后三位（终章一起苏醒）明显比第一位更狠。
+## 血量倍率压在 1.85~2.35：八只全打完的总血量约 1.5 万，
+## 靠成型构筑的持续输出可以在三分钟内清完，但一次失误基本没有翻盘余地。
+static func boss_for_hell(index: int) -> EnemyData:
+	var level: ChallengeData = ChallengeData.at(index)
+	if level == null:
+		level = ChallengeData.at(ChallengeData.count() - 1)
+	var data: EnemyData = boss_for(level)
+	var t: float = float(clampi(index, 0, 7)) / 7.0
+	data.id = "hell_boss_%d" % index
+	data.max_health = level.boss_health * lerpf(1.85, 2.35, t)
+	data.move_speed = level.boss_speed * lerpf(1.06, 1.12, t)
+	data.contact_damage = level.boss_damage * lerpf(1.28, 1.50, t)
+	data.radius = level.boss_radius * lerpf(1.08, 1.18, t)
+	data.boss_skill_level = 3
+	data.boss_skill_interval = level.boss_skill_interval * lerpf(0.78, 0.62, t)
+	data.boss_skill_damage = level.boss_skill_damage * lerpf(1.35, 1.65, t)
+	data.boss_skill_radius = level.boss_skill_radius * lerpf(1.08, 1.20, t)
+	return data
+
+
 ## 挑战模式专用：从「[id, 出场秒数]」名单里加权抽一种。
 ## 与 pick() 的区别是不用 EnemyData.min_elapsed —— 关卡自己决定谁什么时候出场，
 ## 同一只怪在不同关卡里的解锁时间可以完全不同。
